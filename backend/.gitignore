@@ -1,0 +1,56 @@
+# Environments
+.env
+.env.*
+!.env.example
+.venv
+venv/
+ENV/
+env.bak/
+venv.bak/
+
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# C extensions
+*.so
+
+# Distribution / packaging
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+share/python-wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Installer logs
+pip-log.txt
+pip-delete-this-directory.txt
+
+# ProctorSecure Specific
+runtime_frames/
+debug_failed_image.bin
+debug_error.log
+*.jpeg
+*.jpg
+*.png
+
+# VS Code / IDE
+.vscode/
+.idea/
+
+# OS Files
+.DS_Store
+Thumbs.db
