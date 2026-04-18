@@ -324,7 +324,6 @@ async def analyze_room_scan(room_image_data: str) -> Dict[str, Any]:
         if warning in {
             "Environment too dark/Low light",
             "Video too blurry",
-            "No face detected",
             "Multiple faces detected",
         }
     ]
@@ -335,7 +334,7 @@ async def analyze_room_scan(room_image_data: str) -> Dict[str, Any]:
         violations = ", ".join(sorted({violation["object"] for violation in object_violations}))
         warnings.append(f"Unauthorized items detected: {violations}")
 
-    is_valid = analysis.get("face_count", 0) == 1 and not warnings
+    is_valid = analysis.get("face_count", 0) <= 1 and not warnings
     message = (
         "Room scan passed. Environment looks ready for the exam."
         if is_valid

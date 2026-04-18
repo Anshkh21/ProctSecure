@@ -9,6 +9,16 @@ import { useNavigate, useParams } from 'react-router-dom';
 import { Clock, Camera, AlertTriangle, Flag, Send, ChevronLeft, ChevronRight } from 'lucide-react';
 import { useToast } from '../hooks/use-toast';
 import axios from 'axios';
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "./ui/alert-dialog";
 import AnomalyScoreDisplay from './AnomalyScoreDisplay';
 const BACKEND_URL = process.env.REACT_APP_BACKEND_URL || 'http://localhost:8000';
 const API_URL = `${BACKEND_URL}/api`;
@@ -41,6 +51,10 @@ const ExamInterface = () => {
   const [questionsList, setQuestionsList] = useState([]); // State for fetched questions
   const [analysisResult, setAnalysisResult] = useState(null); // [NEW] Anomaly Analysis Result
   const [studentFlags, setStudentFlags] = useState([]);
+  
+  const [isSubmitDialogOpen, setIsSubmitDialogOpen] = useState(false);
+  const [isSubmitting, setIsSubmitting] = useState(false);
+  const [isExamCompleted, setIsExamCompleted] = useState(false);
   const clientWarningsRef = useRef([]); // Buffer for warnings
   const answersRef = useRef({});
   const lastSavedAnswersRef = useRef({});
@@ -107,8 +121,9 @@ const ExamInterface = () => {
     });
   };
 
-  const handleSubmitExam = useCallback(async () => {
+  const executeSubmitExam = useCallback(async () => {
       try {
+          setIsSubmitting(true);
           const token = localStorage.getItem('token');
           const sessionId = localStorage.getItem('examSessionId');
 
@@ -118,6 +133,7 @@ const ExamInterface = () => {
                   description: "Exam session was lost. Please contact support before leaving this page.",
                   variant: "destructive"
               });
+              setIsSubmitting(false);
               return;
           }
 
@@ -154,7 +170,10 @@ const ExamInterface = () => {
           localStorage.removeItem('examSessionId');
           localStorage.removeItem('activeExamId');
           localStorage.removeItem(verificationKey);
-          navigate('/student/dashboard');
+          
+          setIsSubmitting(false);
+          setIsSubmitDialogOpen(false);
+          setIsExamCompleted(true);
 
       } catch (error) {
           console.error("Submission failed", error);
@@ -163,12 +182,17 @@ const ExamInterface = () => {
               description: "Failed to submit exam. Please try again or contact support.", 
               variant: "destructive" 
           });
+          setIsSubmitting(false);
       }
   }, [answers, navigate, savePendingAnswers, toast, verificationKey]);
 
   useEffect(() => {
-    submitExamRef.current = handleSubmitExam;
-  }, [handleSubmitExam]);
+    submitExamRef.current = executeSubmitExam;
+  }, [executeSubmitExam]);
+
+  const handleUserInitiatedSubmit = () => {
+      setIsSubmitDialogOpen(true);
+  };
 
   useEffect(() => {
     answersRef.current = answers;
@@ -436,24 +460,36 @@ const ExamInterface = () => {
           const bufferLength = analyser.frequencyBinCount;
           const dataArray = new Uint8Array(bufferLength);
 
+          const sampleRate = audioCtx.sampleRate;
+          const binSize = sampleRate / analyser.fftSize;
+          // Human voice typically ranges from 300Hz to 3400Hz
+          const minVoiceBin = Math.floor(300 / binSize);
+          const maxVoiceBin = Math.ceil(3400 / binSize);
+
           const checkAudio = () => {
               if (!audioContextRef.current) return;
               
               analyser.getByteFrequencyData(dataArray);
-              let sum = 0;
-              for (let i = 0; i < bufferLength; i++) {
-                  sum += dataArray[i];
+              let voiceSum = 0;
+              let voiceBinsCount = 0;
+              
+              // Only average frequencies in the human voice range to filter out fans/rumble
+              for (let i = minVoiceBin; i <= Math.min(maxVoiceBin, bufferLength - 1); i++) {
+                  voiceSum += dataArray[i];
+                  voiceBinsCount++;
               }
-              const average = sum / bufferLength;
+              const averageVoice = voiceBinsCount > 0 ? voiceSum / voiceBinsCount : 0;
 
-              if (average > 50) { // Threshold
-                  // console.warn("Loud noise detected");
-                   if (clientWarningsRef.current && !clientWarningsRef.current.includes("Audio: High Volume")) {
-                          clientWarningsRef.current.push("Audio: High Volume");
+              if (averageVoice > 60) { // Threshold specifically for voice band
+                   if (clientWarningsRef.current && !clientWarningsRef.current.includes("Audio: Speech/Talking Detected")) {
+                          clientWarningsRef.current.push("Audio: Speech/Talking Detected");
                    }
               }
               
-              requestAnimationFrame(checkAudio);
+              // Use timeout to prevent high CPU usage, checking 10 times a second is plenty
+              setTimeout(() => {
+                  if (audioContextRef.current) requestAnimationFrame(checkAudio);
+              }, 100);
           };
 
           checkAudio();
@@ -642,6 +678,31 @@ const ExamInterface = () => {
     );
   }
 
+  if (isExamCompleted) {
+      return (
+          <div className="min-h-screen bg-gray-100 flex items-center justify-center p-4">
+              <Card className="max-w-xl w-full shadow-2xl border-green-500 border-t-8">
+                  <CardHeader className="text-center pb-6 pt-10">
+                      <div className="mx-auto w-24 h-24 bg-green-100 rounded-full flex items-center justify-center mb-6">
+                          <svg className="w-12 h-12 text-green-600" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
+                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={3} d="M5 13l4 4L19 7" />
+                          </svg>
+                      </div>
+                      <CardTitle className="text-3xl text-gray-900 font-bold">Exam Submitted Successfully</CardTitle>
+                      <CardDescription className="text-lg mt-4 text-gray-600 max-w-sm mx-auto">
+                          Your responses have been securely saved and the proctoring session has ended.
+                      </CardDescription>
+                  </CardHeader>
+                  <CardContent className="flex justify-center pb-10">
+                      <Button onClick={() => navigate('/student/dashboard')} size="lg" className="px-8 py-6 text-lg font-semibold rounded-full bg-slate-900 hover:bg-slate-800 text-white w-full sm:w-auto">
+                          Return to Dashboard
+                      </Button>
+                  </CardContent>
+              </Card>
+          </div>
+      );
+  }
+
   if (!hasStarted) {
       return (
           <div className="min-h-screen bg-gray-100 flex items-center justify-center p-4">
@@ -743,10 +804,11 @@ const ExamInterface = () => {
               </div>
               <Button 
                 variant="destructive"
-                onClick={handleSubmitExam}
+                onClick={handleUserInitiatedSubmit}
+                disabled={isSubmitting}
                 className="bg-red-600 hover:bg-red-700"
               >
-                Submit Exam
+                {isSubmitting ? "Submitting..." : "Submit Exam"}
               </Button>
             </div>
           </div>
@@ -954,6 +1016,31 @@ const ExamInterface = () => {
           </div>
         </div>
       </div>
+
+      <AlertDialog open={isSubmitDialogOpen} onOpenChange={setIsSubmitDialogOpen}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Are you sure you want to submit?</AlertDialogTitle>
+            <AlertDialogDescription>
+              You have answered {answeredCount} out of {questionsList.length} questions.
+              Once submitted, you will not be able to change your answers or return to the exam.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={isSubmitting}>Cancel</AlertDialogCancel>
+            <AlertDialogAction 
+                onClick={(e) => {
+                    e.preventDefault();
+                    executeSubmitExam();
+                }} 
+                disabled={isSubmitting}
+                className="bg-red-600 hover:bg-red-700"
+            >
+              {isSubmitting ? "Submitting..." : "Yes, Submit Exam"}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </div>
   );
 };

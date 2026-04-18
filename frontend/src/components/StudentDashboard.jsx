@@ -19,9 +19,15 @@ const StudentDashboard = () => {
   const navigate = useNavigate();
   const { toast } = useToast();
 
+  const [currentTime, setCurrentTime] = useState(new Date());
+
   useEffect(() => {
     loadUserData();
     loadExams();
+    
+    // Force re-render periodically to update open/closed UI states live
+    const timer = setInterval(() => setCurrentTime(new Date()), 30000);
+    return () => clearInterval(timer);
   }, []);
 
   const loadUserData = () => {
@@ -76,6 +82,27 @@ const StudentDashboard = () => {
 
   const handleStartExam = async (examId) => {
     try {
+      const exam = exams.find(e => e.id === examId);
+      if (exam) {
+        let dateStr = exam.scheduled_at;
+        if (typeof dateStr === 'string' && !dateStr.endsWith('Z')) {
+            dateStr += 'Z';
+        }
+        const scheduledTime = new Date(dateStr);
+        const windowEndTime = new Date(scheduledTime.getTime() + 10 * 60000);
+        
+        if (new Date() > windowEndTime) {
+            toast({
+                title: "Entry Closed",
+                description: "The 10-minute entry window for this exam has expired.",
+                variant: "destructive"
+            });
+            // Auto reload exams to sync with backend state
+            loadExams();
+            return;
+        }
+      }
+
       localStorage.removeItem('examSessionId');
       localStorage.removeItem('activeExamId');
       localStorage.removeItem(`examVerification:${examId}`);
@@ -121,7 +148,7 @@ const StudentDashboard = () => {
     // Ensure UTC interpretation for backend strings
     const dateStr = typeof dateString === 'string' && dateString.endsWith('Z') ? dateString : dateString + 'Z';
     const date = new Date(dateStr);
-    return date.toLocaleDateString('en-IN', { timeZone: 'Asia/Kolkata' }) + ' at ' + date.toLocaleTimeString('en-IN', { timeZone: 'Asia/Kolkata', hour: '2-digit', minute: '2-digit' });
+    return date.toLocaleDateString('en-IN', { timeZone: 'Asia/Kolkata' }) + ' at ' + date.toLocaleTimeString('en-IN', { timeZone: 'Asia/Kolkata', hour: '2-digit', minute: '2-digit' }) + ' IST';
   };
 
   const isExamUpcoming = (exam) => {

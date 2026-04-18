@@ -41,7 +41,9 @@ const ProctorDashboard = () => {
   const [students, setStudents] = useState([]);
   const [flags, setFlags] = useState([]);
   const [selectedStudent, setSelectedStudent] = useState(null);
-  const [activeTab, setActiveTab] = useState('overview');
+  const [activeTab, setActiveTab] = useState(() => {
+    return sessionStorage.getItem('proctorActiveTab') || 'overview';
+  });
   const [searchTerm, setSearchTerm] = useState('');
   const [refreshInterval, setRefreshInterval] = useState(null);
   const [selectedExamFilter, setSelectedExamFilter] = useState('all');
@@ -57,6 +59,10 @@ const ProctorDashboard = () => {
   const [selectedStudentForReset, setSelectedStudentForReset] = useState('');
   const [isLoading, setIsLoading] = useState(true); // [NEW] Loading state
   const navigate = useNavigate();
+
+  useEffect(() => {
+    sessionStorage.setItem('proctorActiveTab', activeTab);
+  }, [activeTab]);
 
   // Parse role from stored JWT for UI gating
   const currentUserRole = (() => {
@@ -227,7 +233,7 @@ const ProctorDashboard = () => {
         year: 'numeric',
         hour: '2-digit', 
         minute: '2-digit' 
-    });
+    }) + ' IST';
   };
 
   const handleStudentClick = (student) => {
@@ -241,21 +247,42 @@ const ProctorDashboard = () => {
   };
 
   const exportReport = () => {
-    // Mock export functionality
+    let reportTitle = 'All Exams';
+    let filteredStudentsForExport = students;
+    
+    if (selectedExamFilter !== 'all') {
+      const selectedExam = exams.find(e => e.id === selectedExamFilter);
+      if (selectedExam) {
+        reportTitle = selectedExam.title;
+      }
+      filteredStudentsForExport = students.filter(s => s.examId === selectedExamFilter);
+    }
+
+    // Filter flags based on the filtered students
+    const studentIds = new Set(filteredStudentsForExport.map(s => s.id));
+    const filteredFlagsForExport = selectedExamFilter === 'all' 
+        ? flags 
+        : flags.filter(f => studentIds.has(f.studentId));
+
     const data = {
-      examSession: 'Software Engineering Fundamentals',
+      examSession: reportTitle,
       timestamp: new Date().toISOString(),
-      students: students.length,
-      flags: flags.length,
-      details: { students, flags }
+      students: filteredStudentsForExport.length,
+      flags: filteredFlagsForExport.length,
+      details: { 
+        students: filteredStudentsForExport, 
+        flags: filteredFlagsForExport 
+      }
     };
     
     const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
-    const examId = selectedStudent ? selectedStudent.examId : 'all';
-    a.download = `exam-report-${examId}-${new Date().toISOString().split('T')[0]}.json`;
+    
+    const examIdentifier = selectedExamFilter === 'all' ? 'all-exams' : selectedExamFilter;
+    a.download = `exam-report-${examIdentifier}-${new Date().toISOString().split('T')[0]}.json`;
+    
     document.body.appendChild(a);
     a.click();
     document.body.removeChild(a);
@@ -957,7 +984,7 @@ const ProctorDashboard = () => {
                                 {flagGroup.exam_title || 'Unknown Exam'}
                               </td>
                               <td className="p-4 align-middle text-gray-500">
-                                {new Date(flagGroup.timestamp.endsWith('Z') ? flagGroup.timestamp : flagGroup.timestamp + 'Z').toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' })}
+                                {new Date(flagGroup.timestamp.endsWith('Z') ? flagGroup.timestamp : flagGroup.timestamp + 'Z').toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' }) + ' IST'}
                               </td>
                               <td className="p-4 align-middle text-right">
                                 {flagGroup.evidence_image ? (
@@ -965,7 +992,7 @@ const ProctorDashboard = () => {
                                       const win = window.open();
                                       let imagesHtml = flagGroup.occurrences
                                           .filter(occ => occ.evidence_image)
-                                          .map(occ => `<div style="text-align:center;margin-bottom:2rem;"><p style="color:white;font-family:sans-serif;">${new Date(occ.timestamp.endsWith('Z') ? occ.timestamp : occ.timestamp + 'Z').toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' })}</p><img src="${occ.evidence_image}" style="max-width:90%;max-height:80vh;border:2px solid white;"/></div>`)
+                                          .map(occ => `<div style="text-align:center;margin-bottom:2rem;"><p style="color:white;font-family:sans-serif;">${new Date(occ.timestamp.endsWith('Z') ? occ.timestamp : occ.timestamp + 'Z').toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' }) + ' IST'}</p><img src="${occ.evidence_image}" style="max-width:90%;max-height:80vh;border:2px solid white;"/></div>`)
                                           .join('');
                                           
                                       if (!imagesHtml) {
@@ -1091,7 +1118,7 @@ const ProctorDashboard = () => {
                                                {(() => {
                                                    // Fix timestamp display - ensure UTC interpretation before converting
                                                    const dateStr = exam.scheduled_at.endsWith('Z') ? exam.scheduled_at : exam.scheduled_at + 'Z';
-                                                   return new Date(dateStr).toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' });
+                                                   return new Date(dateStr).toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' }) + ' IST';
                                                })()}
                                            </td>
                                            <td className="p-4 align-middle">
@@ -1399,7 +1426,7 @@ const ProctorDashboard = () => {
                                                             // allowing proctors to see *all* photos of the occurrences. 
                                                             let imagesHtml = flagGroup.occurrences
                                                                 .filter(occ => occ.evidence_image)
-                                                                .map(occ => `<div style="text-align:center;margin-bottom:2rem;"><p style="color:white;font-family:sans-serif;">${new Date(occ.timestamp.endsWith('Z') ? occ.timestamp : occ.timestamp + 'Z').toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' })}</p><img src="${occ.evidence_image}" style="max-width:90%;max-height:80vh;border:2px solid white;"/></div>`)
+                                                                .map(occ => `<div style="text-align:center;margin-bottom:2rem;"><p style="color:white;font-family:sans-serif;">${new Date(occ.timestamp.endsWith('Z') ? occ.timestamp : occ.timestamp + 'Z').toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' }) + ' IST'}</p><img src="${occ.evidence_image}" style="max-width:90%;max-height:80vh;border:2px solid white;"/></div>`)
                                                                 .join('');
                                                                 
                                                             if (!imagesHtml) {
