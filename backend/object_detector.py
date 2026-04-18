@@ -69,8 +69,10 @@ class ObjectDetector:
             }
         
         try:
+            # Convert BGR to RGB for YOLOv5 model prediction
+            rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
             # Run inference
-            results = self.model(frame)
+            results = self.model(rgb_frame)
             
             # Parse detections
             detections_df = results.pandas().xyxy[0]

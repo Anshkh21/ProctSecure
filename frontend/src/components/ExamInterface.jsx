@@ -139,6 +139,18 @@ const ExamInterface = () => {
           if (document.fullscreenElement) {
               await document.exitFullscreen();
           }
+
+          // Stop all media streams
+          if (webcamStreamRef.current) {
+              webcamStreamRef.current.getTracks().forEach(track => track.stop());
+          }
+          if (screenStreamRef.current) {
+              screenStreamRef.current.getTracks().forEach(track => track.stop());
+          }
+          if (audioContextRef.current) {
+              audioContextRef.current.close();
+          }
+
           localStorage.removeItem('examSessionId');
           localStorage.removeItem('activeExamId');
           localStorage.removeItem(verificationKey);
@@ -232,6 +244,9 @@ const ExamInterface = () => {
   // Monitoring and Fullscreen (Active only after start)
   useEffect(() => {
     if (!hasStarted) return;
+
+    // Force immediately check fullscreen status
+    setIsFullscreen(!!document.fullscreenElement);
 
     // Fullscreen Listener
     const handleFullScreenChange = () => {
@@ -336,6 +351,13 @@ const ExamInterface = () => {
 
   const handleStartExam = async () => {
       try {
+          // Immediately request fullscreen to rely on transient user activation
+          if (document.documentElement.requestFullscreen) {
+              document.documentElement.requestFullscreen().catch(err => {
+                  console.warn("Fullscreen request failed:", err);
+              });
+          }
+
           // 0. Create/Start Session Backend
           const token = localStorage.getItem('token');
           const res = await axios.post(`${API_URL}/session/start`, {
@@ -376,20 +398,6 @@ const ExamInterface = () => {
           await initializeMonitoring();
           await initializeAudioMonitoring();
 
-          // 2. Request Fullscreen
-          // 2. Request Fullscreen
-          if (document.documentElement.requestFullscreen) {
-              await document.documentElement.requestFullscreen();
-              
-              // Double check if it actually worked (browser might deny without enough user interaction)
-              // Give it a tiny delay to register
-              await new Promise(r => setTimeout(r, 100));
-              if (!document.fullscreenElement) {
-                   console.warn("Fullscreen request apparently succeeded but element is null.");
-                   // Don't block, but warn user via the overlay that will appear immediately
-              }
-          }
-          
           // 3. Start Exam State
           setHasStarted(true);
 
