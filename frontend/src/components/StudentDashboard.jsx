@@ -675,7 +675,7 @@ const StudentDashboard = () => {
 
   const firstName = user?.name?.split(' ')[0] || 'Student';
   const hour = new Date().getHours();
-  const greeting = hour < 12 ? 'Good morning' : hour < 17 ? 'Good afternoon' : 'Good evening';
+  const greeting = hour < 5 ? 'Good night' : hour < 12 ? 'Good morning' : hour < 17 ? 'Good afternoon' : hour < 21 ? 'Good evening' : 'Good night';
 
   return (
     <div style={{
