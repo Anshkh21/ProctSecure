@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 import axios from 'axios';
 import { Button } from './ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from './ui/card';
@@ -52,7 +52,14 @@ const ProctorDashboard = () => {
   const [enrollments, setEnrollments] = useState([]);
   const [emailInput, setEmailInput] = useState('');
   const [enrollingStudents, setEnrollingStudents] = useState(false);
-  const [liveFeed, setLiveFeed] = useState({ webcam: null, screen: null });
+  const [liveFeed, setLiveFeed] = useState({ webcam: null, screen: null }); // kept for type compat but not used for display
+  const [webrtcStatus, setWebrtcStatus] = useState('idle'); // 'idle'|'connecting'|'connected'|'disconnected'
+  // Refs for WebRTC proctor side
+  const proctorPcRef = useRef(null);
+  const proctorWsRef = useRef(null);
+  const webcamVideoRef = useRef(null);
+  const screenVideoRef = useRef(null);
+  const receivedStreamsRef = useRef([]); // track unique remote streams in order
   const [analytics, setAnalytics] = useState({ average_time_per_question: 0, most_difficult_question: 'N/A' });
   const [isActionPending, setIsActionPending] = useState(false);
   const [selectedExamForReset, setSelectedExamForReset] = useState('');
@@ -161,30 +168,134 @@ const ProctorDashboard = () => {
     };
   }, [fetchDashboardData]);
 
-  // Poll for live feed when a student is selected
+  // ==========================================================================
+  // WebRTC Live Feed — Proctor (Subscriber) Side
+  // ==========================================================================
+  // When a student is selected, connect to the signaling server and receive
+  // the student's webcam + screen streams via RTCPeerConnection.
+  // ==========================================================================
   useEffect(() => {
-      let interval;
-      if (selectedStudent && selectedStudent.sessionId) {
-          const fetchLiveFeed = async () => {
-              try {
-                  const token = localStorage.getItem('token');
-                  const res = await axios.get(`${API}/proctor/session/${selectedStudent.sessionId}/live`, {
-                      headers: { Authorization: `Bearer ${token}` }
-                  });
-                  setLiveFeed({
-                      webcam: res.data.webcam_frame,
-                      screen: res.data.screen_frame
-                  });
-              } catch (err) {
-                  console.error("Error fetching live feed", err);
-              }
-          };
-          fetchLiveFeed(); // Initial fetch
-          interval = setInterval(fetchLiveFeed, 3000); // Poll every 3 seconds
-      } else {
-          setLiveFeed({ webcam: null, screen: null });
+    // Cleanup previous connection
+    const cleanup = () => {
+      if (proctorPcRef.current) {
+        proctorPcRef.current.close();
+        proctorPcRef.current = null;
       }
-      return () => clearInterval(interval);
+      if (proctorWsRef.current) {
+        proctorWsRef.current.close();
+        proctorWsRef.current = null;
+      }
+      receivedStreamsRef.current = [];
+      setWebrtcStatus('idle');
+      if (webcamVideoRef.current) webcamVideoRef.current.srcObject = null;
+      if (screenVideoRef.current)  screenVideoRef.current.srcObject = null;
+    };
+
+    if (!selectedStudent || !selectedStudent.sessionId) {
+      cleanup();
+      return;
+    }
+
+    const sessionId = selectedStudent.sessionId;
+    setWebrtcStatus('connecting');
+
+    const connect = async () => {
+      const token = localStorage.getItem('token');
+
+      // ── Fetch ICE servers from backend (keeps TURN creds off the client) ──
+      let iceServers = [{ urls: 'stun:stun.l.google.com:19302' }];
+      try {
+        const iceRes = await axios.get(`${API}/rtc/ice-servers`, {
+          headers: { Authorization: `Bearer ${token}` }
+        });
+        iceServers = iceRes.data.iceServers;
+      } catch (e) {
+        console.warn('[WebRTC/proctor] ICE servers fetch failed, using STUN fallback:', e);
+      }
+
+      const pc = new RTCPeerConnection({ iceServers });
+      proctorPcRef.current = pc;
+
+      // ── Route incoming tracks to the correct <video> element ────────────────
+      // The student sends webcam tracks in Stream A, screen tracks in Stream B.
+      // They arrive in that order — first unique stream = webcam, second = screen.
+      pc.ontrack = ({ track, streams }) => {
+        const stream = streams[0];
+        if (!stream) return;
+        const known = receivedStreamsRef.current.find(s => s.id === stream.id);
+        if (!known) {
+          receivedStreamsRef.current.push(stream);
+          const idx = receivedStreamsRef.current.length; // 1-based
+          if (idx === 1 && webcamVideoRef.current) {
+            webcamVideoRef.current.srcObject = stream;
+            webcamVideoRef.current.play().catch(() => {});
+          } else if (idx === 2 && screenVideoRef.current) {
+            screenVideoRef.current.srcObject = stream;
+            screenVideoRef.current.play().catch(() => {});
+          }
+        }
+      };
+
+      pc.onconnectionstatechange = () => {
+        const state = pc.connectionState;
+        console.log('[WebRTC/proctor] state:', state);
+        if (state === 'connected')       setWebrtcStatus('connected');
+        else if (state === 'connecting') setWebrtcStatus('connecting');
+        else if (['failed', 'disconnected', 'closed'].includes(state))
+          setWebrtcStatus('disconnected');
+      };
+
+      // ── Connect to signaling WebSocket ────────────────────────────────
+      const wsBase = BACKEND_URL.replace(/^http/, 'ws');
+      const ws = new WebSocket(`${wsBase}/ws/rtc/${sessionId}/proctor?token=${token}`);
+      proctorWsRef.current = ws;
+
+      ws.onerror = (e) => {
+        console.warn('[WebRTC/proctor] Signaling WS error:', e);
+        setWebrtcStatus('disconnected');
+      };
+      ws.onclose = () => {
+        if (pc.connectionState !== 'connected') setWebrtcStatus('disconnected');
+      };
+
+      ws.onmessage = async ({ data }) => {
+        try {
+          const msg = JSON.parse(data);
+
+          if (msg.type === 'offer') {
+            await pc.setRemoteDescription(
+              new RTCSessionDescription({ type: 'offer', sdp: msg.sdp })
+            );
+            const answer = await pc.createAnswer();
+            await pc.setLocalDescription(answer);
+            ws.send(JSON.stringify({ type: 'answer', sdp: answer.sdp }));
+
+          } else if (msg.type === 'ice-candidate' && msg.candidate) {
+            await pc.addIceCandidate(new RTCIceCandidate(msg.candidate));
+
+          } else if (msg.type === 'student-ready') {
+            // Student reconnected — backend will relay an updated offer soon
+            console.log('[WebRTC/proctor] Student reconnected');
+          }
+        } catch (e) {
+          console.warn('[WebRTC/proctor] Error handling message:', e);
+        }
+      };
+
+      // Send ICE candidates to student via signaling server
+      pc.onicecandidate = ({ candidate }) => {
+        if (candidate && ws.readyState === WebSocket.OPEN) {
+          ws.send(JSON.stringify({ type: 'ice-candidate', candidate }));
+        }
+      };
+    };
+
+    connect().catch(e => {
+      console.error('[WebRTC/proctor] connect() failed:', e);
+      setWebrtcStatus('disconnected');
+    });
+
+    return cleanup;
   }, [selectedStudent]);
 
   const getStatusColor = (status) => {
@@ -1450,32 +1561,51 @@ const ProctorDashboard = () => {
                 ) : (
                   /* Live Monitoring View (Existing) */
                   <div className="space-y-6">
-                  {/* Live Video Feed */}
+                   {/* Live Video Feed — WebRTC */}
                   <Card>
                     <CardHeader>
-                      <CardTitle className="flex items-center">
-                        <Camera className="w-5 h-5 mr-2" />
-                        Live Video Feed
+                      <CardTitle className="flex items-center justify-between">
+                        <div className="flex items-center">
+                          <Camera className="w-5 h-5 mr-2" />
+                          Live Webcam Feed
+                        </div>
+                        <Badge
+                          className={
+                            webrtcStatus === 'connected'    ? 'bg-green-100 text-green-800' :
+                            webrtcStatus === 'connecting'   ? 'bg-yellow-100 text-yellow-800' :
+                            webrtcStatus === 'disconnected' ? 'bg-red-100 text-red-800' :
+                                                             'bg-gray-100 text-gray-700'
+                          }
+                        >
+                          {webrtcStatus === 'connected'    ? '● Live' :
+                           webrtcStatus === 'connecting'   ? '◌ Connecting…' :
+                           webrtcStatus === 'disconnected' ? '● Disconnected' :
+                                                            '○ No Session'}
+                        </Badge>
                       </CardTitle>
                     </CardHeader>
                     <CardContent>
-                      <div className="bg-gray-900 rounded-lg aspect-video flex items-center justify-center">
-                        <div className="text-center text-gray-400">
-                          {liveFeed.webcam ? (
-                              <img src={liveFeed.webcam.startsWith('data:') ? liveFeed.webcam : `data:image/jpeg;base64,${liveFeed.webcam}`} alt="Live Webcam" className="w-full h-full object-contain rounded-lg"/>
-                          ) : (
-                              <>
-                                <Camera className="w-16 h-16 mx-auto mb-4" />
-                                <p>Waiting for live feed...</p>
-                              </>
-                          )}
-                          {!liveFeed.webcam && <p className="text-sm">{selectedStudent.name}</p>}
-                        </div>
+                      <div className="bg-gray-900 rounded-lg aspect-video flex items-center justify-center overflow-hidden">
+                        <video
+                          ref={webcamVideoRef}
+                          autoPlay
+                          playsInline
+                          muted
+                          className="w-full h-full object-contain rounded-lg"
+                          style={{ display: webrtcStatus === 'connected' ? 'block' : 'none' }}
+                        />
+                        {webrtcStatus !== 'connected' && (
+                          <div className="text-center text-gray-400">
+                            <Camera className="w-16 h-16 mx-auto mb-4" />
+                            <p>{webrtcStatus === 'connecting' ? 'Establishing live connection…' : 'Waiting for student stream'}</p>
+                            <p className="text-sm mt-1">{selectedStudent.name}</p>
+                          </div>
+                        )}
                       </div>
                     </CardContent>
                   </Card>
 
-                  {/* Screen Monitor */}
+                  {/* Screen Monitor — WebRTC */}
                   <Card>
                     <CardHeader>
                       <CardTitle className="flex items-center">
@@ -1484,18 +1614,21 @@ const ProctorDashboard = () => {
                       </CardTitle>
                     </CardHeader>
                     <CardContent>
-                      <div className="bg-gray-100 rounded-lg aspect-video flex items-center justify-center">
-                        <div className="text-center text-gray-500">
-                          {liveFeed.screen ? (
-                              <img src={liveFeed.screen.startsWith('data:') ? liveFeed.screen : `data:image/jpeg;base64,${liveFeed.screen}`} alt="Live Screen" className="w-full h-full object-contain rounded-lg"/>
-                          ) : (
-                              <>
-                                <Monitor className="w-16 h-16 mx-auto mb-4" />
-                                <p>Waiting for screen feed...</p>
-                              </>
-                          )}
-                          {!liveFeed.screen && <p className="text-sm">Exam Interface</p>}
-                        </div>
+                      <div className="bg-gray-100 rounded-lg aspect-video flex items-center justify-center overflow-hidden">
+                        <video
+                          ref={screenVideoRef}
+                          autoPlay
+                          playsInline
+                          muted
+                          className="w-full h-full object-contain rounded-lg"
+                          style={{ display: webrtcStatus === 'connected' ? 'block' : 'none' }}
+                        />
+                        {webrtcStatus !== 'connected' && (
+                          <div className="text-center text-gray-500">
+                            <Monitor className="w-16 h-16 mx-auto mb-4" />
+                            <p>{webrtcStatus === 'connecting' ? 'Establishing screen feed…' : 'Waiting for screen feed…'}</p>
+                          </div>
+                        )}
                       </div>
                     </CardContent>
                   </Card>

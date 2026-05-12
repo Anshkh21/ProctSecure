@@ -1,4 +1,4 @@
-from fastapi import FastAPI, APIRouter, HTTPException, Depends, File, UploadFile, Request
+from fastapi import FastAPI, APIRouter, HTTPException, Depends, File, UploadFile, Request, WebSocket, WebSocketDisconnect, Query
 from fastapi.responses import JSONResponse
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from dotenv import load_dotenv
@@ -2334,6 +2334,151 @@ async def reset_database_collection(
 
 # Include the router in the main app
 app.include_router(api_router)
+
+# ===========================================================================
+# WebRTC Signaling — Production-grade WebSocket relay
+# ===========================================================================
+# TURN/STUN credentials are served from the backend so they are NEVER
+# embedded in the frontend JS bundle (security best practice).
+# ===========================================================================
+
+class _SignalingRoom:
+    """Holds the WebSocket connections for one exam session."""
+    def __init__(self):
+        self.student: WebSocket | None = None
+        self.proctors: list[WebSocket] = []
+        self.pending_offer: dict | None = None  # stored so late-joining proctors get it
+
+_rtc_rooms: dict[str, _SignalingRoom] = {}
+
+
+@api_router.get("/rtc/ice-servers")
+async def get_ice_servers(current_user: dict = Depends(get_current_user)):
+    """
+    Return ICE server config (STUN + optional TURN) to the client.
+    Credentials come from env vars — never from the JS bundle.
+    """
+    servers = [
+        {"urls": "stun:stun.l.google.com:19302"},
+        {"urls": "stun:stun1.l.google.com:19302"},
+        {"urls": "stun:stun2.l.google.com:19302"},
+    ]
+
+    # Optional TURN server — set these in backend/.env for production
+    turn_urls  = os.getenv("TURN_SERVER_URLS")   # e.g. "turn:openrelay.metered.ca:80"
+    turn_user  = os.getenv("TURN_USERNAME")       # e.g. "openrelayproject"
+    turn_cred  = os.getenv("TURN_CREDENTIAL")    # e.g. "openrelayproject"
+
+    if turn_urls and turn_user and turn_cred:
+        # Multiple URLs can be comma-separated
+        url_list = [u.strip() for u in turn_urls.split(",") if u.strip()]
+        servers.append({
+            "urls": url_list,
+            "username": turn_user,
+            "credential": turn_cred,
+        })
+        logger.info("TURN server configured: %s", url_list)
+    else:
+        logger.info("No TURN server configured — STUN only (add TURN_SERVER_URLS/TURN_USERNAME/TURN_CREDENTIAL to .env for production)")
+
+    return {"iceServers": servers}
+
+
+@app.websocket("/ws/rtc/{session_id}/{role}")
+async def rtc_signal(
+    websocket: WebSocket,
+    session_id: str,
+    role: str,
+    token: str = Query(..., description="JWT bearer token passed as ?token=..."),
+):
+    """
+    WebRTC signaling relay.
+    Accepts role='student' or role='proctor'.
+    JWT token is passed as a query parameter because WebSocket API
+    does not support custom Authorization headers in browsers.
+    """
+    # --- Auth ---
+    try:
+        jwt.decode(token, JWT_SECRET, algorithms=["HS256"])
+    except Exception:
+        await websocket.close(code=4001)  # 4001 = Unauthorized (custom)
+        return
+
+    await websocket.accept()
+    room = _rtc_rooms.setdefault(session_id, _SignalingRoom())
+
+    try:
+        if role == "student":
+            room.student = websocket
+            room.pending_offer = None  # reset on reconnect
+            # Notify already-waiting proctors that a new student connection is live
+            for p in list(room.proctors):
+                try:
+                    await p.send_json({"type": "student-ready"})
+                except Exception:
+                    pass
+
+            async for msg in websocket.iter_json():
+                msg_type = msg.get("type")
+                if msg_type == "offer":
+                    room.pending_offer = msg
+                    for p in list(room.proctors):
+                        try:
+                            await p.send_json(msg)
+                        except Exception:
+                            pass
+                elif msg_type == "ice-candidate":
+                    for p in list(room.proctors):
+                        try:
+                            await p.send_json(msg)
+                        except Exception:
+                            pass
+
+        elif role == "proctor":
+            room.proctors.append(websocket)
+            # If student already sent an offer, relay it immediately
+            if room.pending_offer:
+                await websocket.send_json(room.pending_offer)
+            elif room.student:
+                # Ask student to re-send offer (handles late-joining proctor)
+                try:
+                    await room.student.send_json({"type": "request-offer"})
+                except Exception:
+                    pass
+
+            async for msg in websocket.iter_json():
+                msg_type = msg.get("type")
+                if msg_type == "answer" and room.student:
+                    try:
+                        await room.student.send_json(msg)
+                    except Exception:
+                        pass
+                elif msg_type == "ice-candidate" and room.student:
+                    try:
+                        await room.student.send_json(msg)
+                    except Exception:
+                        pass
+        else:
+            await websocket.close(code=4003)  # unknown role
+            return
+
+    except WebSocketDisconnect:
+        pass
+    except Exception as e:
+        logger.error("WebRTC signaling error for session %s role %s: %s", session_id, role, e)
+    finally:
+        if role == "student":
+            if room.student is websocket:
+                room.student = None
+                room.pending_offer = None
+        elif role == "proctor":
+            if websocket in room.proctors:
+                room.proctors.remove(websocket)
+        # Garbage-collect empty rooms
+        r = _rtc_rooms.get(session_id)
+        if r and r.student is None and not r.proctors:
+            _rtc_rooms.pop(session_id, None)
+            logger.info("RTC room %s cleaned up", session_id)
 
 async def ensure_indexes():
     index_specs = [

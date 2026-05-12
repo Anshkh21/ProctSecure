@@ -65,6 +65,9 @@ const ExamInterface = () => {
   const webcamStreamRef = useRef(null); // Ref to hold stream before video mount
   const screenStreamRef = useRef(null); // Ref to hold screen stream
   const audioContextRef = useRef(null); // Ref for audio analysis
+  // WebRTC live feed — signaling socket and peer connection
+  const peerConnectionRef = useRef(null);
+  const signalingSocketRef = useRef(null);
   const navigate = useNavigate();
   const { toast } = useToast();
   
@@ -138,7 +141,7 @@ const ExamInterface = () => {
           }
 
           await savePendingAnswers();
-          
+
           await axios.post(`${API_URL}/session/${sessionId}/submit`, {
               answers: answers,
               ended_at: new Date().toISOString()
@@ -151,9 +154,19 @@ const ExamInterface = () => {
               description: "Your responses have been recorded.",
               className: "bg-green-500 text-white"
           });
-          
+
           if (document.fullscreenElement) {
               await document.exitFullscreen();
+          }
+
+          // ── Tear down WebRTC (before stopping media streams) ──
+          if (peerConnectionRef.current) {
+              peerConnectionRef.current.close();
+              peerConnectionRef.current = null;
+          }
+          if (signalingSocketRef.current) {
+              signalingSocketRef.current.close();
+              signalingSocketRef.current = null;
           }
 
           // Stop all media streams
@@ -170,17 +183,17 @@ const ExamInterface = () => {
           localStorage.removeItem('examSessionId');
           localStorage.removeItem('activeExamId');
           localStorage.removeItem(verificationKey);
-          
+
           setIsSubmitting(false);
           setIsSubmitDialogOpen(false);
           setIsExamCompleted(true);
 
       } catch (error) {
           console.error("Submission failed", error);
-          toast({ 
-              title: "Submission Error", 
-              description: "Failed to submit exam. Please try again or contact support.", 
-              variant: "destructive" 
+          toast({
+              title: "Submission Error",
+              description: "Failed to submit exam. Please try again or contact support.",
+              variant: "destructive"
           });
           setIsSubmitting(false);
       }
@@ -373,56 +386,62 @@ const ExamInterface = () => {
     return () => clearInterval(interval);
   }, [hasStarted]);
 
-  const handleStartExam = async () => {
-      try {
-          // Immediately request fullscreen to rely on transient user activation
-          if (document.documentElement.requestFullscreen) {
-              document.documentElement.requestFullscreen().catch(err => {
-                  console.warn("Fullscreen request failed:", err);
-              });
-          }
+  // Grace period ref: suppress fullscreen overlay for 3s after exam starts
+  const fullscreenGraceRef = useRef(false);
 
-          // 0. Create/Start Session Backend
+  const handleStartExam = async () => {
+      // NOTE: Do NOT call requestFullscreen() here.
+      // getDisplayMedia() (screen share) opens an OS-level picker that forcibly
+      // EXITS fullscreen. We call requestFullscreen() inside initializeMonitoring(),
+      // right after the picker closes — at which point the browser grants a fresh
+      // user-activation and the fullscreen request succeeds cleanly.
+      try {
+          // ── Step 1: Start session on backend ──
           const token = localStorage.getItem('token');
           const res = await axios.post(`${API_URL}/session/start`, {
               exam_id: examId
           }, {
               headers: { Authorization: `Bearer ${token}` }
           });
-          
-          
+
           if (res.data.session_id) {
               console.log("Exam Session Started/Resumed:", res.data.session_id);
               localStorage.setItem('examSessionId', res.data.session_id);
               localStorage.setItem('activeExamId', examId);
-               
-              // Initialize Timer from Server Data (New Start or Resume)
+
               if (res.data.start_time && res.data.duration) {
-                  // FORCE UTC: unexpected behavior if server sends naive string and browser implies local
                   const timeStr = res.data.start_time.endsWith('Z') ? res.data.start_time : res.data.start_time + 'Z';
                   const startTime = new Date(timeStr);
                   const now = new Date();
                   const elapsedSeconds = Math.floor((now - startTime) / 1000);
                   const totalSeconds = res.data.duration * 60;
-                  
-                  // If clock skew makes elapsed negative, treat as 0
                   const adjustedElapsed = Math.max(0, elapsedSeconds);
                   const remaining = Math.max(0, totalSeconds - adjustedElapsed);
-                  
                   setTimeRemaining(remaining);
               } else if (exam && exam.duration) {
-                  // Fallback if server doesn't return times (shouldn't happen with fix)
                   setTimeRemaining(exam.duration * 60);
               }
           } else {
               throw new Error("No session ID returned from server");
           }
-          
-          // 1. Request Screen Share FIRST
+
+          // ── Step 2: Screen share → fullscreen → webcam/audio ──
           await initializeMonitoring();
           await initializeAudioMonitoring();
 
-          // 3. Start Exam State
+          // ── Step 3: Start WebRTC live feed to proctor ──────────────
+          const sessionId = localStorage.getItem('examSessionId');
+          if (sessionId) {
+              initializeWebRTC(sessionId).catch(err =>
+                  console.warn('WebRTC init failed (non-fatal):', err)
+              );
+          }
+
+          // ── Step 4: Grace period — prevent overlay flashing during setup ──
+          fullscreenGraceRef.current = true;
+          setTimeout(() => { fullscreenGraceRef.current = false; }, 3000);
+
+          // ── Step 5: Mark exam as started ──────────────────────
           setHasStarted(true);
 
       } catch (err) {
@@ -433,10 +452,10 @@ const ExamInterface = () => {
               localStorage.removeItem(verificationKey);
               navigate(`/verify?examId=${examId}`);
           }
-          toast({ 
-              title: "Setup Failed", 
+          toast({
+              title: "Setup Failed",
               description: err.response?.data?.detail || "Could not start exam session. Please try again.",
-              variant: "destructive" 
+              variant: "destructive"
           });
       }
   };
@@ -507,72 +526,192 @@ const ExamInterface = () => {
 
   const initializeMonitoring = async () => {
     try {
-      // 1. Webcam Stream
-      if (!webcamStreamRef.current) {
-         try {
-             const stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: false });
-             webcamStreamRef.current = stream;
-         } catch (e) {
-             console.error("Webcam access denied", e);
-             throw e;
-         }
+      // ── 1. Screen Share FIRST ─────────────────────────────────────────────
+      // IMPORTANT: getDisplayMedia() MUST come before requestFullscreen().
+      // When the OS-level tab/screen picker opens it forcibly exits fullscreen.
+      // Calling screen share first avoids that conflict entirely.
+      // After the user picks a tab and the promise resolves, Chrome/Edge grant
+      // a fresh user-activation — so requestFullscreen() right after this will
+      // succeed reliably without needing a separate click.
+      if (!screenStreamRef.current) {
+          try {
+              const screenStream = await navigator.mediaDevices.getDisplayMedia({
+                  video: {
+                      cursor: "always",
+                      displaySurface: "browser"
+                  },
+                  audio: false,
+                  selfBrowserSurface: "include",
+                  systemAudio: "exclude",
+                  surfaceSwitching: "include",
+                  monitorTypeSurfaces: "exclude"
+              });
+              screenStreamRef.current = screenStream;
+
+              screenStream.getVideoTracks()[0].onended = () => {
+                  console.log("Screen share ended by user");
+                  toast({
+                      title: "Screen Share Ended",
+                      description: "You stopped screen sharing. Please re-enable it to continue.",
+                      variant: "destructive"
+                  });
+              };
+          } catch (e) {
+              console.error("Screen share access denied", e);
+              throw e;
+          }
       }
-      
-      // Attach to video element if available
+
+      // ── 2. Enter Fullscreen immediately after screen share resolves ───────
+      // The browser just returned from the native picker (counts as a user
+      // interaction), so requestFullscreen() is permitted here.
+      if (document.documentElement.requestFullscreen && !document.fullscreenElement) {
+          try {
+              await document.documentElement.requestFullscreen();
+          } catch (fsErr) {
+              // Non-fatal — exam still runs; the overlay will prompt re-entry.
+              console.warn("Post-screenshare fullscreen request failed:", fsErr);
+          }
+      }
+
+      // ── 3. Webcam Stream ──────────────────────────────────────────────────
+      if (!webcamStreamRef.current) {
+          try {
+              const stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: false });
+              webcamStreamRef.current = stream;
+          } catch (e) {
+              console.error("Webcam access denied", e);
+              throw e;
+          }
+      }
+
+      // Attach both streams to their video elements
       if (videoRef.current && webcamStreamRef.current) {
           videoRef.current.srcObject = webcamStreamRef.current;
       }
-      
-      // 2. Screen Share (Required)
-      if (!screenStreamRef.current) {
-         try {
-             const screenStream = await navigator.mediaDevices.getDisplayMedia({ 
-                video: { 
-                    cursor: "always",
-                    displaySurface: "browser" 
-                }, 
-                audio: false,
-                selfBrowserSurface: "include", 
-                systemAudio: "exclude",
-                surfaceSwitching: "include",
-                monitorTypeSurfaces: "exclude" 
-             });
-             screenStreamRef.current = screenStream;
-
-             screenStream.getVideoTracks()[0].onended = () => {
-                // Determine if this was an intentional stop or accidental
-                // For now, treat as accidental/violation unless exam is submitted
-                console.log("Screen share ended by user");
-                 toast({
-                   title: "Screen Share Ended",
-                   description: "You stopped screen sharing. Please re-enable it to continue.",
-                   variant: "destructive"
-                });
-                // Do NOT auto-submit. Just warn.
-             };
-         } catch (e) {
-             console.error("Screen share access denied", e);
-             throw e;
-         }
-      }
-
-      // Attach to screen video element if available
       if (screenVideoRef.current && screenStreamRef.current) {
-         screenVideoRef.current.srcObject = screenStreamRef.current;
+          screenVideoRef.current.srcObject = screenStreamRef.current;
       }
 
     } catch (err) {
       console.error("Error accessing camera/screen:", err);
-      // Propagate error to handleStartExam
       throw err;
     }
   };
+
+  // ===========================================================================
+  // WebRTC Live Feed \u2014 Student (Publisher) Side
+  // ===========================================================================
+  // Establishes a peer-to-peer connection so the proctor can watch the
+  // student's webcam and screen in real time without any server storage.
+  //
+  // Security: ICE server config (including TURN credentials) is fetched
+  // from the backend so credentials never appear in the JS bundle.
+  // ===========================================================================
+  const initializeWebRTC = async (sessionId) => {
+    try {
+      const token = localStorage.getItem('token');
+
+      // \u2500\u2500 1. Fetch ICE servers (STUN + optional TURN) from backend \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
+      let iceServers = [{ urls: 'stun:stun.l.google.com:19302' }]; // safe fallback
+      try {
+        const iceRes = await axios.get(`${API_URL}/rtc/ice-servers`, {
+          headers: { Authorization: `Bearer ${token}` }
+        });
+        iceServers = iceRes.data.iceServers;
+      } catch (e) {
+        console.warn('Could not fetch ICE servers from backend, using STUN fallback:', e);
+      }
+
+      // \u2500\u2500 2. Create RTCPeerConnection \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
+      const pc = new RTCPeerConnection({ iceServers });
+      peerConnectionRef.current = pc;
+
+      // \u2500\u2500 3. Add both media streams as tracks \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
+      // Webcam tracks are added to Stream A, screen tracks to Stream B.
+      // The proctor uses stream identity to route them to the right <video>.
+      if (webcamStreamRef.current) {
+        webcamStreamRef.current.getTracks().forEach(track =>
+          pc.addTrack(track, webcamStreamRef.current)
+        );
+      }
+      if (screenStreamRef.current) {
+        screenStreamRef.current.getTracks().forEach(track =>
+          pc.addTrack(track, screenStreamRef.current)
+        );
+      }
+
+      // \u2500\u2500 4. Connect to signaling WebSocket \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
+      // Token is passed as query param (browsers don't support WS auth headers)
+      const wsBase = BACKEND_URL.replace(/^http/, 'ws');
+      const ws = new WebSocket(`${wsBase}/ws/rtc/${sessionId}/student?token=${token}`);
+      signalingSocketRef.current = ws;
+
+      const createAndSendOffer = async () => {
+        const offer = await pc.createOffer();
+        await pc.setLocalDescription(offer);
+        if (ws.readyState === WebSocket.OPEN) {
+          ws.send(JSON.stringify({ type: 'offer', sdp: offer.sdp }));
+        }
+      };
+
+      ws.onopen = () => {
+        console.log('[WebRTC] Signaling connected, sending offer...');
+        createAndSendOffer();
+      };
+
+      ws.onerror = (err) => console.warn('[WebRTC] Signaling WS error:', err);
+      ws.onclose = () => console.log('[WebRTC] Signaling WS closed');
+
+      ws.onmessage = async ({ data }) => {
+        try {
+          const msg = JSON.parse(data);
+          if (msg.type === 'answer') {
+            // Guard against receiving an answer before we have a local description
+            if (pc.signalingState === 'have-local-offer') {
+              await pc.setRemoteDescription(
+                new RTCSessionDescription({ type: 'answer', sdp: msg.sdp })
+              );
+              console.log('[WebRTC] Remote description set \u2014 connection establishing...');
+            }
+          } else if (msg.type === 'ice-candidate' && msg.candidate) {
+            await pc.addIceCandidate(new RTCIceCandidate(msg.candidate));
+          } else if (msg.type === 'request-offer') {
+            // Proctor joined late \u2014 re-send offer
+            await createAndSendOffer();
+          }
+        } catch (e) {
+          console.warn('[WebRTC] Error handling signaling message:', e);
+        }
+      };
+
+      // \u2500\u2500 5. ICE candidate trickle \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
+      pc.onicecandidate = ({ candidate }) => {
+        if (candidate && ws.readyState === WebSocket.OPEN) {
+          ws.send(JSON.stringify({ type: 'ice-candidate', candidate }));
+        }
+      };
+
+      pc.onconnectionstatechange = () => {
+        console.log('[WebRTC] Connection state:', pc.connectionState);
+        if (pc.connectionState === 'failed') {
+          // Attempt ICE restart
+          pc.restartIce();
+        }
+      };
+
+    } catch (err) {
+      console.warn('[WebRTC] initializeWebRTC failed (non-fatal, exam continues):', err);
+    }
+  };
+
 
   useEffect(() => {
     if (!hasStarted) return;
 
     const interval = setInterval(async () => {
         if (!hasStarted || !videoRef.current) return;
+
 
         try {
             // Capture Webcam Frame
@@ -757,17 +896,17 @@ const ExamInterface = () => {
 
   return (
     <div className="min-h-screen bg-gray-50 relative">
-      {/* [NEW] Lockdown Overlay */}
-      {!isFullscreen && (
+      {/* Fullscreen Violation Overlay — suppressed during 3-second grace window */}
+      {!isFullscreen && !fullscreenGraceRef.current && (
         <div className="fixed inset-0 bg-red-600 z-[9999] flex flex-col items-center justify-center text-white p-8 text-center animate-pulse">
             <AlertTriangle className="w-32 h-32 mb-6" />
             <h1 className="text-5xl font-bold mb-6">EXAM VIOLATION</h1>
             <p className="text-2xl mb-8 max-w-2xl">
-                You have exited full screen mode. Please return immediately. 
+                You have exited full screen mode. Please return immediately.
                 This incident has been recorded.
             </p>
             <Button 
-                onClick={() => document.documentElement.requestFullscreen()} 
+                onClick={() => document.documentElement.requestFullscreen().catch(console.warn)} 
                 variant="secondary" 
                 size="lg"
                 className="text-xl px-8 py-6 font-bold"
@@ -895,7 +1034,7 @@ const ExamInterface = () => {
               
               <div className="flex space-x-3">
                 {currentQuestion === questionsList.length - 1 ? (
-                  <Button onClick={handleSubmitExam} className="bg-green-600 hover:bg-green-700">
+                  <Button onClick={handleUserInitiatedSubmit} className="bg-green-600 hover:bg-green-700">
                     <Send className="w-4 h-4 mr-2" />
                     Submit Exam
                   </Button>
