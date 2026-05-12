@@ -52,14 +52,14 @@ const ProctorDashboard = () => {
   const [enrollments, setEnrollments] = useState([]);
   const [emailInput, setEmailInput] = useState('');
   const [enrollingStudents, setEnrollingStudents] = useState(false);
-  const [liveFeed, setLiveFeed] = useState({ webcam: null, screen: null }); // kept for type compat but not used for display
-  const [webrtcStatus, setWebrtcStatus] = useState('idle'); // 'idle'|'connecting'|'connected'|'disconnected'
-  // Refs for WebRTC proctor side
-  const proctorPcRef = useRef(null);
-  const proctorWsRef = useRef(null);
-  const webcamVideoRef = useRef(null);
-  const screenVideoRef = useRef(null);
-  const receivedStreamsRef = useRef([]); // track unique remote streams in order
+  const [liveFeed, setLiveFeed] = useState({ webcam: null, screen: null }); // kept for compat
+  // WebRTC live feed state & refs — commented out (re-enable when TURN infra is ready)
+  // const [webrtcStatus, setWebrtcStatus] = useState('idle');
+  // const proctorPcRef = useRef(null);
+  // const proctorWsRef = useRef(null);
+  // const webcamVideoRef = useRef(null);
+  // const screenVideoRef = useRef(null);
+  // const receivedStreamsRef = useRef([]);
   const [analytics, setAnalytics] = useState({ average_time_per_question: 0, most_difficult_question: 'N/A' });
   const [isActionPending, setIsActionPending] = useState(false);
   const [selectedExamForReset, setSelectedExamForReset] = useState('');
@@ -170,133 +170,61 @@ const ProctorDashboard = () => {
 
   // ==========================================================================
   // WebRTC Live Feed — Proctor (Subscriber) Side
+  // Commented out — re-enable when TURN/signaling infrastructure is ready.
   // ==========================================================================
-  // When a student is selected, connect to the signaling server and receive
-  // the student's webcam + screen streams via RTCPeerConnection.
-  // ==========================================================================
+  /*
   useEffect(() => {
-    // Cleanup previous connection
     const cleanup = () => {
-      if (proctorPcRef.current) {
-        proctorPcRef.current.close();
-        proctorPcRef.current = null;
-      }
-      if (proctorWsRef.current) {
-        proctorWsRef.current.close();
-        proctorWsRef.current = null;
-      }
+      if (proctorPcRef.current) { proctorPcRef.current.close(); proctorPcRef.current = null; }
+      if (proctorWsRef.current) { proctorWsRef.current.close(); proctorWsRef.current = null; }
       receivedStreamsRef.current = [];
-      setWebrtcStatus('idle');
       if (webcamVideoRef.current) webcamVideoRef.current.srcObject = null;
-      if (screenVideoRef.current)  screenVideoRef.current.srcObject = null;
+      if (screenVideoRef.current) screenVideoRef.current.srcObject = null;
     };
-
-    if (!selectedStudent || !selectedStudent.sessionId) {
-      cleanup();
-      return;
-    }
-
+    if (!selectedStudent || !selectedStudent.sessionId) { cleanup(); return; }
     const sessionId = selectedStudent.sessionId;
-    setWebrtcStatus('connecting');
-
     const connect = async () => {
       const token = localStorage.getItem('token');
-
-      // ── Fetch ICE servers from backend (keeps TURN creds off the client) ──
       let iceServers = [{ urls: 'stun:stun.l.google.com:19302' }];
       try {
-        const iceRes = await axios.get(`${API}/rtc/ice-servers`, {
-          headers: { Authorization: `Bearer ${token}` }
-        });
+        const iceRes = await axios.get(`${API}/rtc/ice-servers`, { headers: { Authorization: `Bearer ${token}` } });
         iceServers = iceRes.data.iceServers;
-      } catch (e) {
-        console.warn('[WebRTC/proctor] ICE servers fetch failed, using STUN fallback:', e);
-      }
-
+      } catch (e) {}
       const pc = new RTCPeerConnection({ iceServers });
       proctorPcRef.current = pc;
-
-      // ── Route incoming tracks to the correct <video> element ────────────────
-      // The student sends webcam tracks in Stream A, screen tracks in Stream B.
-      // They arrive in that order — first unique stream = webcam, second = screen.
-      pc.ontrack = ({ track, streams }) => {
-        const stream = streams[0];
-        if (!stream) return;
-        const known = receivedStreamsRef.current.find(s => s.id === stream.id);
-        if (!known) {
+      pc.ontrack = ({ streams }) => {
+        const stream = streams[0]; if (!stream) return;
+        if (!receivedStreamsRef.current.find(s => s.id === stream.id)) {
           receivedStreamsRef.current.push(stream);
-          const idx = receivedStreamsRef.current.length; // 1-based
-          if (idx === 1 && webcamVideoRef.current) {
-            webcamVideoRef.current.srcObject = stream;
-            webcamVideoRef.current.play().catch(() => {});
-          } else if (idx === 2 && screenVideoRef.current) {
-            screenVideoRef.current.srcObject = stream;
-            screenVideoRef.current.play().catch(() => {});
-          }
+          const idx = receivedStreamsRef.current.length;
+          if (idx === 1 && webcamVideoRef.current) { webcamVideoRef.current.srcObject = stream; webcamVideoRef.current.play().catch(() => {}); }
+          else if (idx === 2 && screenVideoRef.current) { screenVideoRef.current.srcObject = stream; screenVideoRef.current.play().catch(() => {}); }
         }
       };
-
-      pc.onconnectionstatechange = () => {
-        const state = pc.connectionState;
-        console.log('[WebRTC/proctor] state:', state);
-        if (state === 'connected')       setWebrtcStatus('connected');
-        else if (state === 'connecting') setWebrtcStatus('connecting');
-        else if (['failed', 'disconnected', 'closed'].includes(state))
-          setWebrtcStatus('disconnected');
-      };
-
-      // ── Connect to signaling WebSocket ────────────────────────────────
       const wsBase = BACKEND_URL.replace(/^http/, 'ws');
       const ws = new WebSocket(`${wsBase}/ws/rtc/${sessionId}/proctor?token=${token}`);
       proctorWsRef.current = ws;
-
-      ws.onerror = (e) => {
-        console.warn('[WebRTC/proctor] Signaling WS error:', e);
-        setWebrtcStatus('disconnected');
-      };
-      ws.onclose = () => {
-        if (pc.connectionState !== 'connected') setWebrtcStatus('disconnected');
-      };
-
       ws.onmessage = async ({ data }) => {
-        try {
-          const msg = JSON.parse(data);
-
-          if (msg.type === 'offer') {
-            await pc.setRemoteDescription(
-              new RTCSessionDescription({ type: 'offer', sdp: msg.sdp })
-            );
-            const answer = await pc.createAnswer();
-            await pc.setLocalDescription(answer);
-            ws.send(JSON.stringify({ type: 'answer', sdp: answer.sdp }));
-
-          } else if (msg.type === 'ice-candidate' && msg.candidate) {
-            await pc.addIceCandidate(new RTCIceCandidate(msg.candidate));
-
-          } else if (msg.type === 'student-ready') {
-            // Student reconnected — backend will relay an updated offer soon
-            console.log('[WebRTC/proctor] Student reconnected');
-          }
-        } catch (e) {
-          console.warn('[WebRTC/proctor] Error handling message:', e);
+        const msg = JSON.parse(data);
+        if (msg.type === 'offer') {
+          await pc.setRemoteDescription(new RTCSessionDescription({ type: 'offer', sdp: msg.sdp }));
+          const answer = await pc.createAnswer();
+          await pc.setLocalDescription(answer);
+          ws.send(JSON.stringify({ type: 'answer', sdp: answer.sdp }));
+        } else if (msg.type === 'ice-candidate' && msg.candidate) {
+          await pc.addIceCandidate(new RTCIceCandidate(msg.candidate));
         }
       };
-
-      // Send ICE candidates to student via signaling server
       pc.onicecandidate = ({ candidate }) => {
-        if (candidate && ws.readyState === WebSocket.OPEN) {
+        if (candidate && ws.readyState === WebSocket.OPEN)
           ws.send(JSON.stringify({ type: 'ice-candidate', candidate }));
-        }
       };
     };
-
-    connect().catch(e => {
-      console.error('[WebRTC/proctor] connect() failed:', e);
-      setWebrtcStatus('disconnected');
-    });
-
+    connect().catch(console.error);
     return cleanup;
   }, [selectedStudent]);
+  */
+
 
   const getStatusColor = (status) => {
     switch (status) {
@@ -555,115 +483,148 @@ const ProctorDashboard = () => {
 
   if (isLoading) {
     return (
-      <div className="min-h-screen bg-gray-50 flex flex-col items-center justify-center">
-        <RefreshCw className="w-12 h-12 text-blue-600 animate-spin mb-4" />
-        <h2 className="text-xl font-semibold text-gray-900">Loading Dashboard...</h2>
-        <p className="text-gray-500 mt-2">Fetching live exam data</p>
+      <div className="min-h-screen flex flex-col items-center justify-center" style={{background:'linear-gradient(135deg,#0f172a 0%,#1e3a5f 100%)'}}>
+        <RefreshCw className="w-12 h-12 text-blue-400 animate-spin mb-4" />
+        <h2 className="text-xl font-semibold text-white">Loading Dashboard...</h2>
+        <p className="text-blue-300 mt-2">Fetching live exam data</p>
       </div>
     );
   }
 
   return (
-    <div className="min-h-screen bg-gradient-to-br from-slate-50 to-blue-50">
-      {/* Header */}
-      <header className="bg-white/80 backdrop-blur-sm border-b border-gray-200 sticky top-0 z-50">
-        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-4">
+    <div className="min-h-screen" style={{background:'linear-gradient(160deg,#f0f4ff 0%,#fafbff 60%,#f5f0ff 100%)'}}>
+
+      {/* ── Header ──────────────────────────────────────────────────────── */}
+      <header style={{background:'linear-gradient(135deg,#0f172a 0%,#1e3a5f 50%,#1a2f5e 100%)'}} className="sticky top-0 z-50 shadow-2xl">
+        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-3">
           <div className="flex justify-between items-center">
             <div className="flex items-center space-x-3">
-              <Monitor className="w-8 h-8 text-blue-600" />
+              <div className="w-9 h-9 rounded-xl flex items-center justify-center" style={{background:'linear-gradient(135deg,#3b82f6,#6366f1)'}}>
+                <Shield className="w-5 h-5 text-white" />
+              </div>
               <div>
-                <h1 className="text-xl font-bold text-gray-900">Proctor Dashboard</h1>
-                <p className="text-sm text-gray-600">Live Exam Monitoring</p>
+                <h1 className="text-lg font-bold text-white tracking-tight">ProctorSecure</h1>
+                <div className="flex items-center space-x-1.5">
+                  <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse"></span>
+                  <p className="text-xs text-blue-300">Live Exam Monitoring</p>
+                </div>
               </div>
             </div>
-            
-            <div className="flex items-center space-x-4">
-              <Button variant="default" size="sm" className="bg-blue-600 hover:bg-blue-700" onClick={() => navigate('/create-exam')}>
-                + Create Exam
-              </Button>
-              <Button variant="outline" size="sm" onClick={exportReport}>
-                <Download className="w-4 h-4 mr-2" />
-                Export Report
-              </Button>
-              <Button variant="ghost" size="sm" onClick={fetchDashboardData}>
-                <RefreshCw className="w-4 h-4 mr-2" />
-                Refresh
-              </Button>
-              <Button variant="ghost" size="sm" onClick={handleLogout}>
-                <LogOut className="w-4 h-4 mr-2" />
-                Logout
-              </Button>
+
+            <div className="flex items-center space-x-2">
+              <button
+                onClick={() => navigate('/create-exam')}
+                className="flex items-center space-x-1.5 px-4 py-2 rounded-lg text-sm font-semibold text-white transition-all hover:opacity-90"
+                style={{background:'linear-gradient(135deg,#3b82f6,#6366f1)'}}>
+                <Plus className="w-4 h-4" />
+                <span>Create Exam</span>
+              </button>
+              <button
+                onClick={exportReport}
+                className="flex items-center space-x-1.5 px-3 py-2 rounded-lg text-sm font-medium text-blue-200 border border-white/10 hover:bg-white/10 transition-all">
+                <Download className="w-4 h-4" />
+                <span>Export</span>
+              </button>
+              <button
+                onClick={fetchDashboardData}
+                className="flex items-center space-x-1.5 px-3 py-2 rounded-lg text-sm font-medium text-blue-200 border border-white/10 hover:bg-white/10 transition-all">
+                <RefreshCw className="w-4 h-4" />
+                <span>Refresh</span>
+              </button>
+              <button
+                onClick={handleLogout}
+                className="flex items-center space-x-1.5 px-3 py-2 rounded-lg text-sm font-medium text-red-300 border border-red-400/20 hover:bg-red-400/10 transition-all">
+                <LogOut className="w-4 h-4" />
+                <span>Logout</span>
+              </button>
             </div>
           </div>
         </div>
       </header>
 
       <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
-        {/* Overview Stats */}
-        <div className="grid grid-cols-1 md:grid-cols-4 gap-6 mb-8">
-          <Card>
-            <CardContent className="p-6">
-              <div className="flex items-center justify-between">
-                <div>
-                  <p className="text-sm text-gray-600">Total Students</p>
-                  <p className="text-2xl font-bold text-gray-900">{totalStudents}</p>
-                </div>
-                <Users className="w-8 h-8 text-blue-600" />
+
+        {/* ── Stat Cards ───────────────────────────────────────────────── */}
+        <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-8">
+          <div className="rounded-2xl p-5 shadow-sm border border-white/60" style={{background:'linear-gradient(135deg,#eff6ff,#dbeafe)'}}>
+            <div className="flex items-center justify-between mb-3">
+              <div className="w-10 h-10 rounded-xl flex items-center justify-center" style={{background:'linear-gradient(135deg,#3b82f6,#2563eb)'}}>
+                <Users className="w-5 h-5 text-white" />
               </div>
-            </CardContent>
-          </Card>
-          
-          <Card>
-            <CardContent className="p-6">
-              <div className="flex items-center justify-between">
-                <div>
-                  <p className="text-sm text-gray-600">Active Sessions</p>
-                  <p className="text-2xl font-bold text-green-600">{activeStudents}</p>
-                </div>
-                <CheckCircle className="w-8 h-8 text-green-600" />
+              <span className="text-xs font-semibold text-blue-500 bg-blue-100 px-2 py-0.5 rounded-full">Total</span>
+            </div>
+            <p className="text-3xl font-bold text-blue-900">{totalStudents}</p>
+            <p className="text-sm text-blue-600 mt-1">Registered Students</p>
+          </div>
+
+          <div className="rounded-2xl p-5 shadow-sm border border-white/60" style={{background:'linear-gradient(135deg,#f0fdf4,#dcfce7)'}}>
+            <div className="flex items-center justify-between mb-3">
+              <div className="w-10 h-10 rounded-xl flex items-center justify-center" style={{background:'linear-gradient(135deg,#22c55e,#16a34a)'}}>
+                <CheckCircle className="w-5 h-5 text-white" />
               </div>
-            </CardContent>
-          </Card>
-          
-          <Card>
-            <CardContent className="p-6">
-              <div className="flex items-center justify-between">
-                <div>
-                  <p className="text-sm text-gray-600">Flagged Students</p>
-                  <p className="text-2xl font-bold text-red-600">{flaggedStudents}</p>
-                </div>
-                <AlertTriangle className="w-8 h-8 text-red-600" />
+              <span className="text-xs font-semibold text-emerald-600 bg-emerald-100 px-2 py-0.5 rounded-full">Live</span>
+            </div>
+            <p className="text-3xl font-bold text-emerald-900">{activeStudents}</p>
+            <p className="text-sm text-emerald-600 mt-1">Active Sessions</p>
+          </div>
+
+          <div className="rounded-2xl p-5 shadow-sm border border-white/60" style={{background:'linear-gradient(135deg,#fff1f2,#ffe4e6)'}}>
+            <div className="flex items-center justify-between mb-3">
+              <div className="w-10 h-10 rounded-xl flex items-center justify-center" style={{background:'linear-gradient(135deg,#ef4444,#dc2626)'}}>
+                <AlertTriangle className="w-5 h-5 text-white" />
               </div>
-            </CardContent>
-          </Card>
-          
-          <Card>
-            <CardContent className="p-6">
-              <div className="flex items-center justify-between">
-                <div>
-                  <p className="text-sm text-gray-600">Total Flags</p>
-                  <p className="text-2xl font-bold text-yellow-600">{totalFlags}</p>
-                </div>
-                <Flag className="w-8 h-8 text-yellow-600" />
+              <span className="text-xs font-semibold text-red-500 bg-red-100 px-2 py-0.5 rounded-full">Alert</span>
+            </div>
+            <p className="text-3xl font-bold text-red-900">{flaggedStudents}</p>
+            <p className="text-sm text-red-500 mt-1">Flagged Students</p>
+          </div>
+
+          <div className="rounded-2xl p-5 shadow-sm border border-white/60" style={{background:'linear-gradient(135deg,#fffbeb,#fef3c7)'}}>
+            <div className="flex items-center justify-between mb-3">
+              <div className="w-10 h-10 rounded-xl flex items-center justify-center" style={{background:'linear-gradient(135deg,#f59e0b,#d97706)'}}>
+                <Flag className="w-5 h-5 text-white" />
               </div>
-            </CardContent>
-          </Card>
+              <span className="text-xs font-semibold text-amber-600 bg-amber-100 px-2 py-0.5 rounded-full">Flags</span>
+            </div>
+            <p className="text-3xl font-bold text-amber-900">{totalFlags}</p>
+            <p className="text-sm text-amber-600 mt-1">Total Violations</p>
+          </div>
         </div>
 
         <Tabs value={activeTab} onValueChange={setActiveTab}>
-          <TabsList className="mb-6">
-            <TabsTrigger value="overview">Overview</TabsTrigger>
-            <TabsTrigger value="students">Live Sessions</TabsTrigger>
-            <TabsTrigger value="results">Results</TabsTrigger>
-            <TabsTrigger value="flags">Flags & Alerts</TabsTrigger>
-            <TabsTrigger value="analytics">Analytics</TabsTrigger>
-            <TabsTrigger value="exams">Exams</TabsTrigger>
-            <TabsTrigger value="enrollments">Enrollments</TabsTrigger>
-            <TabsTrigger value="system">System Actions</TabsTrigger>
-            {selectedStudent && (
-              <TabsTrigger value="student-detail">Student Detail</TabsTrigger>
-            )}
-          </TabsList>
+          <div className="bg-white rounded-2xl shadow-sm border border-gray-100 p-1.5 mb-6 overflow-x-auto">
+            <TabsList className="flex space-x-1 bg-transparent h-auto p-0 w-max min-w-full">
+              {[
+                { value: 'overview',     label: 'Overview',        icon: Monitor },
+                { value: 'students',     label: 'Live Sessions',   icon: Users },
+                { value: 'results',      label: 'Results',         icon: FileText },
+                { value: 'flags',        label: 'Flags & Alerts',  icon: AlertTriangle },
+                { value: 'analytics',    label: 'Analytics',       icon: GraduationCap },
+                { value: 'exams',        label: 'Exams',           icon: BookOpen },
+                { value: 'enrollments',  label: 'Enrollments',     icon: Users },
+                { value: 'system',       label: 'System Actions',  icon: Shield },
+              ].map(({ value, label, icon: Icon }) => (
+                <TabsTrigger
+                  key={value}
+                  value={value}
+                  className="flex items-center space-x-1.5 px-4 py-2 rounded-xl text-sm font-medium transition-all data-[state=active]:bg-blue-600 data-[state=active]:text-white data-[state=active]:shadow-sm text-gray-500 hover:text-gray-800"
+                >
+                  <Icon className="w-3.5 h-3.5" />
+                  <span>{label}</span>
+                </TabsTrigger>
+              ))}
+              {selectedStudent && (
+                <TabsTrigger
+                  value="student-detail"
+                  className="flex items-center space-x-1.5 px-4 py-2 rounded-xl text-sm font-medium transition-all data-[state=active]:bg-indigo-600 data-[state=active]:text-white data-[state=active]:shadow-sm text-gray-500 hover:text-gray-800"
+                >
+                  <Eye className="w-3.5 h-3.5" />
+                  <span>Student Detail</span>
+                </TabsTrigger>
+              )}
+            </TabsList>
+          </div>
+
 
           <TabsContent value="overview" className="space-y-6">
             {exams.length === 0 ? (
@@ -731,84 +692,133 @@ const ProctorDashboard = () => {
               </Card>
             ) : (
               <div className="grid lg:grid-cols-2 gap-6">
-                {/* Live Student Feed */}
-                <Card>
-                  <CardHeader>
-                    <CardTitle>Live Student Monitoring</CardTitle>
-                    <CardDescription>Real-time view of active exam sessions</CardDescription>
-                  </CardHeader>
-                  <CardContent>
+
+                {/* Active Sessions Panel */}
+                <div className="rounded-2xl border border-gray-100 bg-white shadow-sm overflow-hidden">
+                  <div className="flex items-center justify-between px-6 py-4 border-b border-gray-50">
+                    <div>
+                      <h3 className="font-semibold text-gray-900">Active Sessions</h3>
+                      <p className="text-xs text-gray-400 mt-0.5">Students currently in exam</p>
+                    </div>
+                    <div className="flex items-center space-x-1.5 bg-emerald-50 border border-emerald-100 rounded-full px-3 py-1">
+                      <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse"></span>
+                      <span className="text-xs font-medium text-emerald-700">AI Monitoring</span>
+                    </div>
+                  </div>
+                  <div className="p-4">
                     {students.filter(s => s.status !== 'completed').length === 0 ? (
-                      <div className="text-center py-8 text-gray-500">
-                        <Users className="w-12 h-12 mx-auto mb-3 opacity-50" />
-                        <p>No active exam sessions</p>
-                        <p className="text-sm mt-1">Students will appear here when they start taking exams</p>
+                      <div className="flex flex-col items-center justify-center py-10 text-gray-400">
+                        <div className="w-14 h-14 rounded-2xl flex items-center justify-center mb-3" style={{background:'linear-gradient(135deg,#f1f5f9,#e2e8f0)'}}>
+                          <Users className="w-7 h-7 text-gray-400" />
+                        </div>
+                        <p className="font-medium text-gray-500 text-sm">No active sessions</p>
+                        <p className="text-xs text-gray-400 mt-1">Students appear here when they start</p>
                       </div>
                     ) : (
-                      <div className="space-y-4">
-                        {students.filter(s => s.status !== 'completed').slice(0, 3).map((student) => (
-                          <div key={student.sessionId || student.id} className="flex items-center justify-between p-3 bg-gray-50 rounded-lg">
+                      <div className="space-y-2">
+                        {students.filter(s => s.status !== 'completed').slice(0, 4).map((student) => (
+                          <div
+                            key={student.sessionId || student.id}
+                            className="flex items-center justify-between p-3 rounded-xl border border-gray-50 hover:border-blue-100 hover:bg-blue-50/40 transition-all cursor-pointer"
+                            onClick={() => handleStudentClick(student)}
+                          >
                             <div className="flex items-center space-x-3">
-                              <Avatar>
-                                <AvatarFallback>{student.name?.split(' ').map(n => n?.[0]).join('') || '?'}</AvatarFallback>
-                              </Avatar>
+                              <div className="w-8 h-8 rounded-full flex items-center justify-center text-xs font-bold text-white" style={{background:'linear-gradient(135deg,#6366f1,#3b82f6)'}}>
+                                {student.name?.split(' ').map(n => n?.[0]).join('').slice(0,2) || '?'}
+                              </div>
                               <div>
-                                <p className="font-medium text-gray-900">{student.name || 'Unknown'}</p>
-                                <p className="text-sm text-gray-600">Progress: {student.progress}%</p>
+                                <p className="text-sm font-semibold text-gray-900">{student.name || 'Unknown'}</p>
+                                <div className="flex items-center space-x-2 mt-0.5">
+                                  <div className="h-1 w-16 bg-gray-100 rounded-full overflow-hidden">
+                                    <div className="h-full bg-blue-400 rounded-full" style={{width:`${student.progress}%`}} />
+                                  </div>
+                                  <span className="text-xs text-gray-400">{student.progress}%</span>
+                                </div>
                               </div>
                             </div>
                             <div className="flex items-center space-x-2">
-                              <Badge className={getStatusColor(student.status)}>
-                                {student.status}
-                              </Badge>
-                              <Button size="sm" variant="outline" onClick={() => handleStudentClick(student)}>
-                                <Eye className="w-4 h-4" />
-                              </Button>
+                              {student.flagCount > 0 && (
+                                <span className="text-xs font-bold text-red-500 bg-red-50 px-2 py-0.5 rounded-full">{student.flagCount} flags</span>
+                              )}
+                              <span className={`text-xs font-medium px-2 py-0.5 rounded-full ${getStatusColor(student.status)}`}>{student.status}</span>
                             </div>
                           </div>
                         ))}
                       </div>
                     )}
-                  </CardContent>
-                </Card>
+                  </div>
+                </div>
 
-                {/* Recent Flags */}
-                <Card>
-                  <CardHeader>
-                    <CardTitle>Recent Flags</CardTitle>
-                    <CardDescription>Latest security alerts and violations</CardDescription>
-                  </CardHeader>
-                  <CardContent>
-                    {flags.length === 0 ? (
-                      <div className="text-center py-8 text-gray-500">
-                        <Flag className="w-12 h-12 mx-auto mb-3 opacity-50" />
-                        <p>No flags reported</p>
-                        <p className="text-sm mt-1">Security alerts will appear here</p>
+                {/* Recent Flags Panel — scoped to active sessions only */}
+                {(() => {
+                  const activeStudentIds = new Set(
+                    students.filter(s => s.status !== 'completed').map(s => s.id)
+                  );
+                  const hasActiveSessions = activeStudentIds.size > 0;
+                  const liveFlags = flags
+                    .filter(f => activeStudentIds.has(f.studentId))
+                    .slice(0, 5);
+
+                  return (
+                    <div className="rounded-2xl border border-gray-100 bg-white shadow-sm overflow-hidden">
+                      <div className="flex items-center justify-between px-6 py-4 border-b border-gray-50">
+                        <div>
+                          <h3 className="font-semibold text-gray-900">Live Flags</h3>
+                          <p className="text-xs text-gray-400 mt-0.5">Violations from current sessions</p>
+                        </div>
+                        {liveFlags.length > 0 && (
+                          <span className="text-xs font-bold text-red-500 bg-red-50 border border-red-100 px-2.5 py-1 rounded-full">
+                            {liveFlags.length} live
+                          </span>
+                        )}
                       </div>
-                    ) : (
-                      <div className="space-y-4">
-                        {flags.slice(0, 4).map((flag) => {
-                          const student = students.find(s => s.id === flag.studentId);
-                          return (
-                            <div key={flag.id} className="flex items-start space-x-3 p-3 border border-gray-200 rounded-lg">
-                              <div className={`w-3 h-3 rounded-full mt-2 ${getSeverityColor(flag.severity)}`}></div>
-                              <div className="flex-1">
-                                <p className="font-medium text-gray-900">{flag.student_name || student?.name || 'Unknown Student'}</p>
-                                <p className="text-sm text-gray-600">{flag.description}</p>
-                                <p className="text-xs text-gray-500 mt-1">
-                                    {flag.exam_title} • {formatTimestamp(flag.timestamp)}
-                                </p>
-                              </div>
-                              <Badge variant="outline" className="text-xs">
-                                {flag.severity}
-                              </Badge>
+                      <div className="p-4">
+                        {!hasActiveSessions ? (
+                          /* No active sessions — don't show historical flags */
+                          <div className="flex flex-col items-center justify-center py-10 text-gray-400">
+                            <div className="w-14 h-14 rounded-2xl flex items-center justify-center mb-3" style={{background:'linear-gradient(135deg,#f8fafc,#f1f5f9)'}}>
+                              <Monitor className="w-7 h-7 text-gray-300" />
                             </div>
-                          );
-                        })}
+                            <p className="font-medium text-gray-400 text-sm">No active sessions</p>
+                            <p className="text-xs text-gray-300 mt-1">Flags will appear when an exam starts</p>
+                          </div>
+                        ) : liveFlags.length === 0 ? (
+                          /* Active sessions but no flags yet */
+                          <div className="flex flex-col items-center justify-center py-10 text-gray-400">
+                            <div className="w-14 h-14 rounded-2xl flex items-center justify-center mb-3" style={{background:'linear-gradient(135deg,#f0fdf4,#dcfce7)'}}>
+                              <CheckCircle className="w-7 h-7 text-emerald-400" />
+                            </div>
+                            <p className="font-medium text-gray-500 text-sm">All clear</p>
+                            <p className="text-xs text-gray-400 mt-1">No violations in current sessions</p>
+                          </div>
+                        ) : (
+                          <div className="space-y-2">
+                            {liveFlags.map((flag) => {
+                              const student = students.find(s => s.id === flag.studentId);
+                              const severityStyle = flag.severity === 'high'
+                                ? { dot: 'bg-red-500', bg: 'bg-red-50 border-red-100', text: 'text-red-600' }
+                                : flag.severity === 'medium'
+                                ? { dot: 'bg-amber-400', bg: 'bg-amber-50 border-amber-100', text: 'text-amber-600' }
+                                : { dot: 'bg-blue-400', bg: 'bg-blue-50 border-blue-100', text: 'text-blue-600' };
+                              return (
+                                <div key={flag.id} className={`flex items-start space-x-3 p-3 rounded-xl border ${severityStyle.bg}`}>
+                                  <span className={`w-2 h-2 rounded-full mt-1.5 flex-shrink-0 animate-pulse ${severityStyle.dot}`}></span>
+                                  <div className="flex-1 min-w-0">
+                                    <p className="text-sm font-semibold text-gray-900 truncate">{flag.student_name || student?.name || 'Unknown'}</p>
+                                    <p className="text-xs text-gray-600 truncate">{flag.description}</p>
+                                    <p className="text-xs text-gray-400 mt-0.5">{flag.exam_title} · {formatTimestamp(flag.timestamp)}</p>
+                                  </div>
+                                  <span className={`text-xs font-bold px-2 py-0.5 rounded-full flex-shrink-0 ${severityStyle.text} bg-white border`}>{flag.severity}</span>
+                                </div>
+                              );
+                            })}
+                          </div>
+                        )}
                       </div>
-                    )}
-                  </CardContent>
-                </Card>
+                    </div>
+                  );
+                })()}
+
               </div>
             )}
           </TabsContent>
@@ -821,12 +831,17 @@ const ProctorDashboard = () => {
             />
           </TabsContent>
 
-          <TabsContent value="students" className="space-y-6">
-            <div className="flex justify-between items-center">
-              <h2 className="text-2xl font-bold text-gray-900">Active Student Sessions</h2>
-              <div className="flex items-center space-x-4">
-                <select 
-                  className="h-9 w-[200px] border border-gray-200 rounded-md text-sm bg-white px-3 focus:outline-none focus:ring-2 focus:ring-blue-500"
+          <TabsContent value="students" className="space-y-5">
+
+            {/* Header row */}
+            <div className="flex flex-wrap items-center justify-between gap-4">
+              <div>
+                <h2 className="text-xl font-bold text-gray-900">Live Sessions</h2>
+                <p className="text-sm text-gray-400">Students currently sitting an exam</p>
+              </div>
+              <div className="flex items-center space-x-3">
+                <select
+                  className="h-9 rounded-xl border border-gray-200 text-sm bg-white px-3 pr-8 focus:outline-none focus:ring-2 focus:ring-blue-400 text-gray-700"
                   value={selectedExamFilter}
                   onChange={(e) => setSelectedExamFilter(e.target.value)}
                 >
@@ -836,85 +851,95 @@ const ProctorDashboard = () => {
                   ))}
                 </select>
                 <div className="relative">
-                  <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 text-gray-400 w-4 h-4" />
-                  <Input 
-                    placeholder="Search students..." 
+                  <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400 w-4 h-4" />
+                  <Input
+                    placeholder="Search students…"
                     value={searchTerm}
                     onChange={(e) => setSearchTerm(e.target.value)}
-                    className="pl-10 w-64"
+                    className="pl-9 w-56 rounded-xl border-gray-200 focus:ring-blue-400"
                   />
                 </div>
               </div>
             </div>
 
             {filteredStudents.length === 0 ? (
-                <div className="text-center py-12 bg-white rounded-lg border border-dashed border-gray-300">
-                    <Monitor className="w-12 h-12 mx-auto text-gray-300 mb-3" />
-                    <h3 className="text-lg font-medium text-gray-900">No Active Sessions</h3>
-                    <p className="text-gray-500 max-w-sm mx-auto mt-1">
-                        Students will appear here automatically when they start taking an exam.
-                    </p>
+              <div className="flex flex-col items-center justify-center py-20 rounded-2xl border border-dashed border-gray-200 bg-white">
+                <div className="w-16 h-16 rounded-2xl flex items-center justify-center mb-4" style={{background:'linear-gradient(135deg,#f1f5f9,#e2e8f0)'}}>
+                  <Monitor className="w-8 h-8 text-gray-400" />
                 </div>
+                <h3 className="text-base font-semibold text-gray-700">No Active Sessions</h3>
+                <p className="text-sm text-gray-400 mt-1 max-w-xs text-center">Students appear here automatically when they start an exam.</p>
+              </div>
             ) : (
-            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-              {filteredStudents.map((student) => (
-                <Card key={student.sessionId} className="group hover:shadow-lg transition-all cursor-pointer" 
-                      onClick={() => handleStudentClick(student)}>
-                  <CardHeader className="pb-3">
-                    <div className="flex items-center justify-between">
-                      <div className="flex items-center space-x-3">
-                        <Avatar>
-                          <AvatarFallback>{student.name?.split(' ').map(n => n?.[0]).join('') || '?'}</AvatarFallback>
-                        </Avatar>
-                        <div>
-                          <CardTitle className="text-sm">{student.name || 'Unknown'}</CardTitle>
-                          <CardDescription className="text-xs">{student.email}</CardDescription>
+              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-5">
+                {filteredStudents.map((student) => (
+                  <div
+                    key={student.sessionId}
+                    className="group rounded-2xl bg-white border border-gray-100 shadow-sm hover:shadow-md hover:border-blue-100 transition-all cursor-pointer overflow-hidden"
+                    onClick={() => handleStudentClick(student)}
+                  >
+                    {/* Card top accent */}
+                    <div className="h-1.5 w-full" style={{background:'linear-gradient(90deg,#6366f1,#3b82f6,#06b6d4)'}} />
+
+                    <div className="p-5">
+                      {/* Student identity row */}
+                      <div className="flex items-center justify-between mb-4">
+                        <div className="flex items-center space-x-3">
+                          <div className="w-10 h-10 rounded-xl flex items-center justify-center text-sm font-bold text-white flex-shrink-0" style={{background:'linear-gradient(135deg,#6366f1,#3b82f6)'}}>
+                            {student.name?.split(' ').map(n => n?.[0]).join('').slice(0,2) || '?'}
+                          </div>
+                          <div className="min-w-0">
+                            <p className="font-semibold text-gray-900 text-sm truncate">{student.name || 'Unknown'}</p>
+                            <p className="text-xs text-gray-400 truncate">{student.email}</p>
+                          </div>
+                        </div>
+                        <span className={`text-xs font-semibold px-2.5 py-1 rounded-full ${getStatusColor(student.status)}`}>
+                          {student.status}
+                        </span>
+                      </div>
+
+                      {/* Progress bar */}
+                      <div className="mb-3">
+                        <div className="flex justify-between text-xs text-gray-500 mb-1">
+                          <span>Progress</span>
+                          <span className="font-semibold text-gray-700">{student.progress}%</span>
+                        </div>
+                        <div className="h-1.5 w-full bg-gray-100 rounded-full overflow-hidden">
+                          <div
+                            className="h-full rounded-full transition-all"
+                            style={{width:`${student.progress}%`, background:'linear-gradient(90deg,#6366f1,#3b82f6)'}}
+                          />
                         </div>
                       </div>
-                      <Badge className={getStatusColor(student.status)}>
-                        {student.status}
-                      </Badge>
-                    </div>
-                  </CardHeader>
-                  
-                  <CardContent className="space-y-3">
-                    <div className="space-y-2">
-                      <div className="flex justify-between text-sm">
-                        <span className="text-gray-600">Progress</span>
-                        <span className="font-medium">{student.progress}%</span>
-                      </div>
-                      <Progress value={student.progress} />
-                    </div>
-                    
-                    {/* [NEW] Score Display for Completed Exams */}
-                    {student.status === 'completed' && (
-                        <div className="bg-blue-50 p-2 rounded text-center">
-                            <p className="text-xs text-blue-600 font-semibold uppercase">Final Score</p>
-                            <p className="text-lg font-bold text-blue-800">
-                                {student.score} / {student.total_points} ({student.percentage?.toFixed(1)}%)
-                            </p>
+
+                      {/* Completed score */}
+                      {student.status === 'completed' && (
+                        <div className="rounded-xl p-2.5 text-center mb-3" style={{background:'linear-gradient(135deg,#eff6ff,#dbeafe)'}}>
+                          <p className="text-xs text-blue-500 font-semibold uppercase tracking-wide">Final Score</p>
+                          <p className="text-lg font-bold text-blue-800 mt-0.5">
+                            {student.score} / {student.total_points}
+                            <span className="text-sm font-medium text-blue-500 ml-1">({student.percentage?.toFixed(1)}%)</span>
+                          </p>
                         </div>
-                    )}
-                    
-                    <div className="grid grid-cols-2 gap-3 text-sm">
-                      <div className="flex items-center space-x-2">
-                        <Camera className={`w-4 h-4 ${student.webcamStatus === 'active' ? 'text-green-600' : 'text-red-600'}`} />
-                        <span className="text-gray-600">Webcam</span>
-                      </div>
-                      <div className="flex items-center space-x-2">
-                        <Monitor className={`w-4 h-4 ${student.screenStatus === 'monitored' ? 'text-green-600' : 'text-yellow-600'}`} />
-                        <span className="text-gray-600">Screen</span>
+                      )}
+
+                      {/* Stats row */}
+                      <div className="flex items-center justify-between text-xs text-gray-500 pt-2 border-t border-gray-50">
+                        <div className="flex items-center space-x-1">
+                          <Camera className={`w-3.5 h-3.5 ${student.webcamStatus === 'active' ? 'text-emerald-500' : 'text-red-400'}`} />
+                          <Monitor className={`w-3.5 h-3.5 ${student.screenStatus === 'monitored' ? 'text-emerald-500' : 'text-amber-400'}`} />
+                        </div>
+                        <span className="text-gray-400">{student.timeRemaining ? Math.round(student.timeRemaining) : 0} min left</span>
+                        {student.flagCount > 0 ? (
+                          <span className="font-bold text-red-500 bg-red-50 px-2 py-0.5 rounded-full">{student.flagCount} flags</span>
+                        ) : (
+                          <span className="text-emerald-500 font-medium">Clean</span>
+                        )}
                       </div>
                     </div>
-                    
-                    <div className="flex justify-between items-center text-sm">
-                      <span className="text-gray-600">Flags: {student.flagCount}</span>
-                      <span className="text-gray-600">Time: {student.timeRemaining ? Math.round(student.timeRemaining) : 0}min</span>
-                    </div>
-                  </CardContent>
-                </Card>
-              ))}
-            </div>
+                  </div>
+                ))}
+              </div>
             )}
           </TabsContent>
 
@@ -1559,81 +1584,83 @@ const ProctorDashboard = () => {
                         </Card>
                     </div>
                 ) : (
-                  /* Live Monitoring View (Existing) */
-                  <div className="space-y-6">
-                   {/* Live Video Feed — WebRTC */}
-                  <Card>
-                    <CardHeader>
-                      <CardTitle className="flex items-center justify-between">
-                        <div className="flex items-center">
-                          <Camera className="w-5 h-5 mr-2" />
-                          Live Webcam Feed
-                        </div>
-                        <Badge
-                          className={
-                            webrtcStatus === 'connected'    ? 'bg-green-100 text-green-800' :
-                            webrtcStatus === 'connecting'   ? 'bg-yellow-100 text-yellow-800' :
-                            webrtcStatus === 'disconnected' ? 'bg-red-100 text-red-800' :
-                                                             'bg-gray-100 text-gray-700'
-                          }
-                        >
-                          {webrtcStatus === 'connected'    ? '● Live' :
-                           webrtcStatus === 'connecting'   ? '◌ Connecting…' :
-                           webrtcStatus === 'disconnected' ? '● Disconnected' :
-                                                            '○ No Session'}
-                        </Badge>
-                      </CardTitle>
-                    </CardHeader>
-                    <CardContent>
-                      <div className="bg-gray-900 rounded-lg aspect-video flex items-center justify-center overflow-hidden">
-                        <video
-                          ref={webcamVideoRef}
-                          autoPlay
-                          playsInline
-                          muted
-                          className="w-full h-full object-contain rounded-lg"
-                          style={{ display: webrtcStatus === 'connected' ? 'block' : 'none' }}
-                        />
-                        {webrtcStatus !== 'connected' && (
-                          <div className="text-center text-gray-400">
-                            <Camera className="w-16 h-16 mx-auto mb-4" />
-                            <p>{webrtcStatus === 'connecting' ? 'Establishing live connection…' : 'Waiting for student stream'}</p>
-                            <p className="text-sm mt-1">{selectedStudent.name}</p>
-                          </div>
-                        )}
-                      </div>
-                    </CardContent>
-                  </Card>
+                  <div className="space-y-4">
 
-                  {/* Screen Monitor — WebRTC */}
-                  <Card>
-                    <CardHeader>
-                      <CardTitle className="flex items-center">
-                        <Monitor className="w-5 h-5 mr-2" />
-                        Screen Monitor
-                      </CardTitle>
-                    </CardHeader>
-                    <CardContent>
-                      <div className="bg-gray-100 rounded-lg aspect-video flex items-center justify-center overflow-hidden">
-                        <video
-                          ref={screenVideoRef}
-                          autoPlay
-                          playsInline
-                          muted
-                          className="w-full h-full object-contain rounded-lg"
-                          style={{ display: webrtcStatus === 'connected' ? 'block' : 'none' }}
-                        />
-                        {webrtcStatus !== 'connected' && (
-                          <div className="text-center text-gray-500">
-                            <Monitor className="w-16 h-16 mx-auto mb-4" />
-                            <p>{webrtcStatus === 'connecting' ? 'Establishing screen feed…' : 'Waiting for screen feed…'}</p>
+                    {/* AI Proctoring Active Banner */}
+                    <div className="rounded-2xl p-5 border" style={{background:'linear-gradient(135deg,#0f172a,#1e3a5f)'}}>
+                      <div className="flex items-center justify-between mb-4">
+                        <div className="flex items-center space-x-3">
+                          <div className="w-10 h-10 rounded-xl flex items-center justify-center" style={{background:'linear-gradient(135deg,#3b82f6,#6366f1)'}}>
+                            <Shield className="w-5 h-5 text-white" />
                           </div>
-                        )}
+                          <div>
+                            <p className="text-white font-semibold text-sm">AI Proctoring Active</p>
+                            <p className="text-blue-300 text-xs">Behavioral analysis running in background</p>
+                          </div>
+                        </div>
+                        <div className="flex items-center space-x-1.5 bg-emerald-500/20 border border-emerald-400/30 rounded-full px-3 py-1">
+                          <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse"></span>
+                          <span className="text-emerald-300 text-xs font-medium">Monitoring</span>
+                        </div>
                       </div>
-                    </CardContent>
-                  </Card>
+                      <div className="grid grid-cols-3 gap-3">
+                        {[
+                          { label: 'Total Flags', value: flags.filter(f => f.studentId === selectedStudent?.id).length, color: 'text-red-300' },
+                          { label: 'Exam Progress', value: `${selectedStudent?.progress ?? 0}%`, color: 'text-blue-300' },
+                          { label: 'Time Left', value: `${selectedStudent?.timeRemaining ? Math.round(selectedStudent.timeRemaining) : 0}m`, color: 'text-amber-300' },
+                        ].map(({ label, value, color }) => (
+                          <div key={label} className="bg-white/5 rounded-xl p-3 text-center">
+                            <p className={`text-xl font-bold ${color}`}>{value}</p>
+                            <p className="text-blue-300 text-xs mt-0.5">{label}</p>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+
+                    {/* Violation Breakdown */}
+                    {(() => {
+                      const studentFlags = flags.filter(f => f.studentId === selectedStudent?.id);
+                      const byType = studentFlags.reduce((acc, f) => {
+                        const key = f.flag_type || f.description || 'Unknown';
+                        acc[key] = (acc[key] || 0) + 1;
+                        return acc;
+                      }, {});
+                      const entries = Object.entries(byType).sort((a,b) => b[1]-a[1]);
+                      if (entries.length === 0) return null;
+                      return (
+                        <Card className="border border-gray-100 shadow-sm">
+                          <CardHeader className="pb-3">
+                            <CardTitle className="text-sm font-semibold text-gray-700 flex items-center space-x-2">
+                              <AlertTriangle className="w-4 h-4 text-amber-500" />
+                              <span>Violation Breakdown</span>
+                            </CardTitle>
+                          </CardHeader>
+                          <CardContent className="space-y-2">
+                            {entries.map(([type, count]) => (
+                              <div key={type} className="flex items-center justify-between">
+                                <span className="text-sm text-gray-600 truncate max-w-[200px]">{type}</span>
+                                <div className="flex items-center space-x-2">
+                                  <div className="w-20 h-1.5 bg-gray-100 rounded-full overflow-hidden">
+                                    <div
+                                      className="h-full rounded-full"
+                                      style={{
+                                        width: `${Math.min(100, (count / Math.max(...entries.map(e=>e[1]))) * 100)}%`,
+                                        background: 'linear-gradient(90deg,#ef4444,#f97316)'
+                                      }}
+                                    />
+                                  </div>
+                                  <span className="text-xs font-bold text-red-500 w-4 text-right">{count}</span>
+                                </div>
+                              </div>
+                            ))}
+                          </CardContent>
+                        </Card>
+                      );
+                    })()}
+
                   </div>
                 )}
+
                 </div>
 
                 <div className="space-y-6">

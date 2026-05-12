@@ -65,9 +65,9 @@ const ExamInterface = () => {
   const webcamStreamRef = useRef(null); // Ref to hold stream before video mount
   const screenStreamRef = useRef(null); // Ref to hold screen stream
   const audioContextRef = useRef(null); // Ref for audio analysis
-  // WebRTC live feed — signaling socket and peer connection
-  const peerConnectionRef = useRef(null);
-  const signalingSocketRef = useRef(null);
+  // WebRTC live feed — commented out (to be re-enabled when TURN infra is ready)
+  // const peerConnectionRef = useRef(null);
+  // const signalingSocketRef = useRef(null);
   const navigate = useNavigate();
   const { toast } = useToast();
   
@@ -159,15 +159,15 @@ const ExamInterface = () => {
               await document.exitFullscreen();
           }
 
-          // ── Tear down WebRTC (before stopping media streams) ──
-          if (peerConnectionRef.current) {
-              peerConnectionRef.current.close();
-              peerConnectionRef.current = null;
-          }
-          if (signalingSocketRef.current) {
-              signalingSocketRef.current.close();
-              signalingSocketRef.current = null;
-          }
+          // WebRTC teardown — commented out (re-enable with WebRTC live feed)
+          // if (peerConnectionRef.current) {
+          //     peerConnectionRef.current.close();
+          //     peerConnectionRef.current = null;
+          // }
+          // if (signalingSocketRef.current) {
+          //     signalingSocketRef.current.close();
+          //     signalingSocketRef.current = null;
+          // }
 
           // Stop all media streams
           if (webcamStreamRef.current) {
@@ -429,13 +429,13 @@ const ExamInterface = () => {
           await initializeMonitoring();
           await initializeAudioMonitoring();
 
-          // ── Step 3: Start WebRTC live feed to proctor ──────────────
-          const sessionId = localStorage.getItem('examSessionId');
-          if (sessionId) {
-              initializeWebRTC(sessionId).catch(err =>
-                  console.warn('WebRTC init failed (non-fatal):', err)
-              );
-          }
+          // WebRTC live feed — commented out (re-enable when TURN infra is ready)
+          // const sessionId = localStorage.getItem('examSessionId');
+          // if (sessionId) {
+          //     initializeWebRTC(sessionId).catch(err =>
+          //         console.warn('WebRTC init failed (non-fatal):', err)
+          //     );
+          // }
 
           // ── Step 4: Grace period — prevent overlay flashing during setup ──
           fullscreenGraceRef.current = true;
@@ -599,111 +599,113 @@ const ExamInterface = () => {
     }
   };
 
-  // ===========================================================================
-  // WebRTC Live Feed \u2014 Student (Publisher) Side
-  // ===========================================================================
-  // Establishes a peer-to-peer connection so the proctor can watch the
-  // student's webcam and screen in real time without any server storage.
-  //
-  // Security: ICE server config (including TURN credentials) is fetched
-  // from the backend so credentials never appear in the JS bundle.
-  // ===========================================================================
-  const initializeWebRTC = async (sessionId) => {
-    try {
-      const token = localStorage.getItem('token');
+  /* WebRTC Live Feed � commented out (re-enable when TURN infra is ready)
+  // // ===========================================================================
+  // // WebRTC Live Feed \u2014 Student (Publisher) Side
+  // // ===========================================================================
+  // // Establishes a peer-to-peer connection so the proctor can watch the
+  // // student's webcam and screen in real time without any server storage.
+  // //
+  // // Security: ICE server config (including TURN credentials) is fetched
+  // // from the backend so credentials never appear in the JS bundle.
+  // // ===========================================================================
+  // const initializeWebRTC = async (sessionId) => {
+  //   try {
+  //     const token = localStorage.getItem('token');
 
-      // \u2500\u2500 1. Fetch ICE servers (STUN + optional TURN) from backend \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
-      let iceServers = [{ urls: 'stun:stun.l.google.com:19302' }]; // safe fallback
-      try {
-        const iceRes = await axios.get(`${API_URL}/rtc/ice-servers`, {
-          headers: { Authorization: `Bearer ${token}` }
-        });
-        iceServers = iceRes.data.iceServers;
-      } catch (e) {
-        console.warn('Could not fetch ICE servers from backend, using STUN fallback:', e);
-      }
+  //     // \u2500\u2500 1. Fetch ICE servers (STUN + optional TURN) from backend \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
+  //     let iceServers = [{ urls: 'stun:stun.l.google.com:19302' }]; // safe fallback
+  //     try {
+  //       const iceRes = await axios.get(`${API_URL}/rtc/ice-servers`, {
+  //         headers: { Authorization: `Bearer ${token}` }
+  //       });
+  //       iceServers = iceRes.data.iceServers;
+  //     } catch (e) {
+  //       console.warn('Could not fetch ICE servers from backend, using STUN fallback:', e);
+  //     }
 
-      // \u2500\u2500 2. Create RTCPeerConnection \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
-      const pc = new RTCPeerConnection({ iceServers });
-      peerConnectionRef.current = pc;
+  //     // \u2500\u2500 2. Create RTCPeerConnection \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
+  //     const pc = new RTCPeerConnection({ iceServers });
+  //     peerConnectionRef.current = pc;
 
-      // \u2500\u2500 3. Add both media streams as tracks \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
-      // Webcam tracks are added to Stream A, screen tracks to Stream B.
-      // The proctor uses stream identity to route them to the right <video>.
-      if (webcamStreamRef.current) {
-        webcamStreamRef.current.getTracks().forEach(track =>
-          pc.addTrack(track, webcamStreamRef.current)
-        );
-      }
-      if (screenStreamRef.current) {
-        screenStreamRef.current.getTracks().forEach(track =>
-          pc.addTrack(track, screenStreamRef.current)
-        );
-      }
+  //     // \u2500\u2500 3. Add both media streams as tracks \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
+  //     // Webcam tracks are added to Stream A, screen tracks to Stream B.
+  //     // The proctor uses stream identity to route them to the right <video>.
+  //     if (webcamStreamRef.current) {
+  //       webcamStreamRef.current.getTracks().forEach(track =>
+  //         pc.addTrack(track, webcamStreamRef.current)
+  //       );
+  //     }
+  //     if (screenStreamRef.current) {
+  //       screenStreamRef.current.getTracks().forEach(track =>
+  //         pc.addTrack(track, screenStreamRef.current)
+  //       );
+  //     }
 
-      // \u2500\u2500 4. Connect to signaling WebSocket \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
-      // Token is passed as query param (browsers don't support WS auth headers)
-      const wsBase = BACKEND_URL.replace(/^http/, 'ws');
-      const ws = new WebSocket(`${wsBase}/ws/rtc/${sessionId}/student?token=${token}`);
-      signalingSocketRef.current = ws;
+  //     // \u2500\u2500 4. Connect to signaling WebSocket \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
+  //     // Token is passed as query param (browsers don't support WS auth headers)
+  //     const wsBase = BACKEND_URL.replace(/^http/, 'ws');
+  //     const ws = new WebSocket(`${wsBase}/ws/rtc/${sessionId}/student?token=${token}`);
+  //     signalingSocketRef.current = ws;
 
-      const createAndSendOffer = async () => {
-        const offer = await pc.createOffer();
-        await pc.setLocalDescription(offer);
-        if (ws.readyState === WebSocket.OPEN) {
-          ws.send(JSON.stringify({ type: 'offer', sdp: offer.sdp }));
-        }
-      };
+  //     const createAndSendOffer = async () => {
+  //       const offer = await pc.createOffer();
+  //       await pc.setLocalDescription(offer);
+  //       if (ws.readyState === WebSocket.OPEN) {
+  //         ws.send(JSON.stringify({ type: 'offer', sdp: offer.sdp }));
+  //       }
+  //     };
 
-      ws.onopen = () => {
-        console.log('[WebRTC] Signaling connected, sending offer...');
-        createAndSendOffer();
-      };
+  //     ws.onopen = () => {
+  //       console.log('[WebRTC] Signaling connected, sending offer...');
+  //       createAndSendOffer();
+  //     };
 
-      ws.onerror = (err) => console.warn('[WebRTC] Signaling WS error:', err);
-      ws.onclose = () => console.log('[WebRTC] Signaling WS closed');
+  //     ws.onerror = (err) => console.warn('[WebRTC] Signaling WS error:', err);
+  //     ws.onclose = () => console.log('[WebRTC] Signaling WS closed');
 
-      ws.onmessage = async ({ data }) => {
-        try {
-          const msg = JSON.parse(data);
-          if (msg.type === 'answer') {
-            // Guard against receiving an answer before we have a local description
-            if (pc.signalingState === 'have-local-offer') {
-              await pc.setRemoteDescription(
-                new RTCSessionDescription({ type: 'answer', sdp: msg.sdp })
-              );
-              console.log('[WebRTC] Remote description set \u2014 connection establishing...');
-            }
-          } else if (msg.type === 'ice-candidate' && msg.candidate) {
-            await pc.addIceCandidate(new RTCIceCandidate(msg.candidate));
-          } else if (msg.type === 'request-offer') {
-            // Proctor joined late \u2014 re-send offer
-            await createAndSendOffer();
-          }
-        } catch (e) {
-          console.warn('[WebRTC] Error handling signaling message:', e);
-        }
-      };
+  //     ws.onmessage = async ({ data }) => {
+  //       try {
+  //         const msg = JSON.parse(data);
+  //         if (msg.type === 'answer') {
+  //           // Guard against receiving an answer before we have a local description
+  //           if (pc.signalingState === 'have-local-offer') {
+  //             await pc.setRemoteDescription(
+  //               new RTCSessionDescription({ type: 'answer', sdp: msg.sdp })
+  //             );
+  //             console.log('[WebRTC] Remote description set \u2014 connection establishing...');
+  //           }
+  //         } else if (msg.type === 'ice-candidate' && msg.candidate) {
+  //           await pc.addIceCandidate(new RTCIceCandidate(msg.candidate));
+  //         } else if (msg.type === 'request-offer') {
+  //           // Proctor joined late \u2014 re-send offer
+  //           await createAndSendOffer();
+  //         }
+  //       } catch (e) {
+  //         console.warn('[WebRTC] Error handling signaling message:', e);
+  //       }
+  //     };
 
-      // \u2500\u2500 5. ICE candidate trickle \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
-      pc.onicecandidate = ({ candidate }) => {
-        if (candidate && ws.readyState === WebSocket.OPEN) {
-          ws.send(JSON.stringify({ type: 'ice-candidate', candidate }));
-        }
-      };
+  //     // \u2500\u2500 5. ICE candidate trickle \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
+  //     pc.onicecandidate = ({ candidate }) => {
+  //       if (candidate && ws.readyState === WebSocket.OPEN) {
+  //         ws.send(JSON.stringify({ type: 'ice-candidate', candidate }));
+  //       }
+  //     };
 
-      pc.onconnectionstatechange = () => {
-        console.log('[WebRTC] Connection state:', pc.connectionState);
-        if (pc.connectionState === 'failed') {
-          // Attempt ICE restart
-          pc.restartIce();
-        }
-      };
+  //     pc.onconnectionstatechange = () => {
+  //       console.log('[WebRTC] Connection state:', pc.connectionState);
+  //       if (pc.connectionState === 'failed') {
+  //         // Attempt ICE restart
+  //         pc.restartIce();
+  //       }
+  //     };
 
-    } catch (err) {
-      console.warn('[WebRTC] initializeWebRTC failed (non-fatal, exam continues):', err);
-    }
-  };
+  //   } catch (err) {
+  //     console.warn('[WebRTC] initializeWebRTC failed (non-fatal, exam continues):', err);
+  //   }
+  // };
+  */
 
 
   useEffect(() => {
