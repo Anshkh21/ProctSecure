@@ -1,6 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
-import ReCAPTCHA from 'react-google-recaptcha';
-import { Tabs, TabsContent, TabsList, TabsTrigger } from './ui/tabs';
+import React, { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import {
   Shield, Eye, Lock, Users, Monitor, CheckCircle,
@@ -71,8 +69,6 @@ const DarkInput = ({ id, type, placeholder, value, onChange, onKeyDown }) => (
 const LandingPage = () => {
   const [loginData, setLoginData] = useState({ email: '', password: '' });
   const [isLoading, setIsLoading] = useState(false);
-  const [recaptchaToken, setRecaptchaToken] = useState(null);
-  const recaptchaRef = useRef(null);
   const navigate  = useNavigate();
   const { toast } = useToast();
 
@@ -107,31 +103,37 @@ const LandingPage = () => {
     checkLoginStatus();
   }, [navigate, toast]);
 
-  const handleLogin = async (role) => {
+  const handleLogin = async () => {
     if (!loginData.email || !loginData.password) {
-      toast({ title: 'Error', description: 'Please enter email and password', variant: 'destructive' });
-      return;
-    }
-    if (!recaptchaToken) {
-      toast({ title: 'Error', description: 'Please complete the reCAPTCHA verification', variant: 'destructive' });
+      toast({ title: 'Error', description: 'Please enter your email and password', variant: 'destructive' });
       return;
     }
     setIsLoading(true);
     try {
-      const { data } = await axios.post(`${API}/auth/login`, { ...loginData, role });
+      // Try each role endpoint; the backend validates credentials per role
+      let data = null;
+      for (const role of ['student', 'proctor', 'admin']) {
+        try {
+          const res = await axios.post(`${API}/auth/login`, { ...loginData, role });
+          data = res.data;
+          break;
+        } catch (e) {
+          if (e.response?.status !== 401 && e.response?.status !== 404) throw e;
+        }
+      }
+      if (!data) throw { response: { status: 401 } };
       localStorage.setItem('token', data.token);
       localStorage.setItem('user', JSON.stringify(data.user));
-      toast({ title: 'Success', description: `Welcome back, ${data.user.name}!` });
+      toast({ title: 'Welcome back!', description: `Logged in as ${data.user.name}` });
+      const role = data.user.role;
       if (role === 'student') navigate('/student');
       else if (role === 'proctor') navigate('/proctor');
       else navigate('/admin');
     } catch (err) {
-      const msg = err.response?.status === 401 ? 'Invalid credentials.'
-                : err.response?.status === 404 ? 'User not found.'
-                : 'Login failed.';
+      const msg = err.response?.status === 401 ? 'Invalid email or password.'
+                : err.response?.status === 404 ? 'Account not found.'
+                : 'Login failed. Please try again.';
       toast({ title: 'Login Failed', description: msg, variant: 'destructive' });
-      if (recaptchaRef.current) recaptchaRef.current.reset();
-      setRecaptchaToken(null);
     } finally { setIsLoading(false); }
   };
 
@@ -157,10 +159,6 @@ const LandingPage = () => {
     { value: '<1s',       label: 'Detection latency',     icon: <Clock    size={18} color="#22d3ee" /> },
     { value: 'Free',      label: 'Early access',          icon: <Star     size={18} color="#f472b6" /> },
   ];
-
-  /* ── colours per role ─── */
-  const roleGrad = { student: ['#1d4ed8','#3b82f6'], proctor: ['#4338ca','#6366f1'], admin: ['#6d28d9','#7c3aed'] };
-  const roleShadow = { student: 'rgba(59,130,246,0.4)', proctor: 'rgba(99,102,241,0.4)', admin: 'rgba(124,58,237,0.4)' };
 
   /* ── shared card style ─── */
   const glassCard = {
@@ -241,7 +239,7 @@ const LandingPage = () => {
                 ProctorSecure is the AI-powered exam platform built for modern institutions — bringing enterprise-grade security and effortless student experience together for the first time.
               </p>
 
-              <div style={{ display:'flex', gap:'14px', flexWrap:'wrap' }}>
+              <div className="hero-buttons" style={{ display:'flex', gap:'14px', flexWrap:'wrap' }}>
                 <Btn><Rocket size={16} /> Get Early Access</Btn>
                 <GhostBtn href="#how-it-works">See How It Works <ChevronRight size={15} /></GhostBtn>
               </div>
@@ -272,83 +270,62 @@ const LandingPage = () => {
                 <p style={{ margin:0, color:'rgba(148,163,184,0.75)', fontSize:'0.875rem' }}>Enter your credentials to access the portal</p>
               </div>
 
-              {/* Tabs */}
-              <Tabs defaultValue="student" className="w-full">
-                <TabsList style={{ display:'grid', gridTemplateColumns:'repeat(3,1fr)', background:'rgba(255,255,255,0.04)', border:'1px solid rgba(255,255,255,0.06)', borderRadius:'10px', padding:'4px', marginBottom:'20px' }}>
-                  {['student','proctor','admin'].map(r => (
-                    <TabsTrigger key={r} value={r}
-                      className={`data-[state=active]:text-white data-[state=active]:shadow-md ${r==='student'?'data-[state=active]:bg-blue-600':r==='proctor'?'data-[state=active]:bg-indigo-600':'data-[state=active]:bg-violet-600'}`}
-                      style={{ borderRadius:'7px', color:'#94a3b8', fontWeight:600, fontSize:'0.85rem' }}
-                    >{r.charAt(0).toUpperCase()+r.slice(1)}</TabsTrigger>
-                  ))}
-                </TabsList>
+              {/* Single unified login form */}
+              <div style={{ display:'flex', flexDirection:'column', gap:'14px' }}>
+                <div style={{ display:'flex', flexDirection:'column', gap:'6px' }}>
+                  <label style={{ color:'#94a3b8', fontSize:'0.82rem', fontWeight:500 }}>Email Address</label>
+                  <DarkInput
+                    id="login-email"
+                    type="email"
+                    placeholder="you@university.edu"
+                    value={loginData.email}
+                    onChange={e => setLoginData({...loginData, email: e.target.value})}
+                    onKeyDown={e => e.key === 'Enter' && handleLogin()}
+                  />
+                </div>
+                <div style={{ display:'flex', flexDirection:'column', gap:'6px' }}>
+                  <label style={{ color:'#94a3b8', fontSize:'0.82rem', fontWeight:500 }}>Password</label>
+                  <DarkInput
+                    id="login-password"
+                    type="password"
+                    placeholder="••••••••"
+                    value={loginData.password}
+                    onChange={e => setLoginData({...loginData, password: e.target.value})}
+                    onKeyDown={e => e.key === 'Enter' && handleLogin()}
+                  />
+                </div>
 
-                {['student','proctor','admin'].map(role => (
-                  <TabsContent key={role} value={role}>
-                    <div style={{ display:'flex', flexDirection:'column', gap:'14px' }}>
-                      <div style={{ display:'flex', flexDirection:'column', gap:'6px' }}>
-                        <label style={{ color:'#94a3b8', fontSize:'0.82rem', fontWeight:500 }}>Email Address</label>
-                        <DarkInput id={`${role}-email`} type="email" placeholder={`${role}@university.edu`}
-                          value={loginData.email}
-                          onChange={e => setLoginData({...loginData, email: e.target.value})}
-                          onKeyDown={e => e.key==='Enter' && handleLogin(role)}
-                        />
-                      </div>
-                      <div style={{ display:'flex', flexDirection:'column', gap:'6px' }}>
-                        <label style={{ color:'#94a3b8', fontSize:'0.82rem', fontWeight:500 }}>Password</label>
-                        <DarkInput id={`${role}-password`} type="password" placeholder="••••••••"
-                          value={loginData.password}
-                          onChange={e => setLoginData({...loginData, password: e.target.value})}
-                          onKeyDown={e => e.key==='Enter' && handleLogin(role)}
-                        />
-                      </div>
+                <button
+                  onClick={handleLogin}
+                  disabled={isLoading}
+                  style={{
+                    width:'100%', padding:'12px', borderRadius:'9px', fontWeight:700,
+                    fontSize:'0.95rem', cursor: isLoading ? 'not-allowed' : 'pointer',
+                    border:'none', color:'white', marginTop:'4px', opacity: isLoading ? 0.7 : 1,
+                    background:'linear-gradient(135deg,#3b82f6,#6366f1)',
+                    boxShadow:'0 4px 20px rgba(99,102,241,0.4)',
+                    display:'flex', alignItems:'center', justifyContent:'center', gap:'8px',
+                    transition:'all 0.2s'
+                  }}
+                  onMouseEnter={e => { if (!isLoading) e.currentTarget.style.transform='translateY(-1px)'; }}
+                  onMouseLeave={e => { e.currentTarget.style.transform='translateY(0)'; }}
+                >
+                  {isLoading ? (
+                    <>
+                      <span style={{ width:'15px', height:'15px', border:'2px solid rgba(255,255,255,0.3)', borderTopColor:'white', borderRadius:'50%', animation:'spin 0.7s linear infinite', display:'inline-block' }} />
+                      Authenticating…
+                    </>
+                  ) : 'Sign In'}
+                </button>
 
-                      <div style={{ margin: '10px 0', display: 'flex', justifyContent: 'center' }}>
-                        <ReCAPTCHA
-                          ref={recaptchaRef}
-                          sitekey={process.env.REACT_APP_RECAPTCHA_SITE_KEY || "6LeIxAcTAAAAAJcZVRqyHh71UMIEGNQ_MXjiZKhI"}
-                          onChange={(val) => setRecaptchaToken(val)}
-                          theme="dark"
-                        />
-                      </div>
-
-                      <button
-                        onClick={() => handleLogin(role)} disabled={isLoading}
-                        style={{
-                          width:'100%', padding:'12px', borderRadius:'9px', fontWeight:700,
-                          fontSize:'0.95rem', cursor: isLoading ? 'not-allowed' : 'pointer',
-                          border:'none', color:'white', marginTop:'4px', opacity: isLoading ? 0.7 : 1,
-                          background: `linear-gradient(135deg,${roleGrad[role][0]},${roleGrad[role][1]})`,
-                          boxShadow: `0 4px 20px ${roleShadow[role]}`,
-                          display:'flex', alignItems:'center', justifyContent:'center', gap:'8px',
-                          transition:'all 0.2s'
-                        }}
-                        onMouseEnter={e => { if (!isLoading) e.currentTarget.style.transform='translateY(-1px)'; }}
-                        onMouseLeave={e => { e.currentTarget.style.transform='translateY(0)'; }}
-                      >
-                        {isLoading ? (
-                          <>
-                            <span style={{ width:'15px', height:'15px', border:'2px solid rgba(255,255,255,0.3)', borderTopColor:'white', borderRadius:'50%', animation:'spin 0.7s linear infinite', display:'inline-block' }} />
-                            Authenticating…
-                          </>
-                        ) : `Login as ${role.charAt(0).toUpperCase()+role.slice(1)}`}
-                      </button>
-
-                      <div style={{ padding:'9px 12px', borderRadius:'8px', background:'rgba(255,255,255,0.03)', border:'1px solid rgba(255,255,255,0.06)', fontSize:'0.76rem', textAlign:'center', color:'rgba(148,163,184,0.65)' }}>
-                        <span style={{ fontWeight:600, color:'rgba(148,163,184,0.85)' }}>Demo:</span> {role}@university.edu / password123
-                      </div>
-
-                      <p style={{ margin:0, textAlign:'center', fontSize:'0.82rem', color:'rgba(148,163,184,0.6)' }}>
-                        Don't have an account?{' '}
-                        <a href="/register" style={{ color:'#a5b4fc', fontWeight:600, textDecoration:'none', transition:'color 0.2s' }}
-                          onMouseEnter={e => e.target.style.color='#60a5fa'}
-                          onMouseLeave={e => e.target.style.color='#a5b4fc'}
-                        >Create one →</a>
-                      </p>
-                    </div>
-                  </TabsContent>
-                ))}
-              </Tabs>
+                <p style={{ margin:0, textAlign:'center', fontSize:'0.82rem', color:'rgba(148,163,184,0.6)' }}>
+                  Don't have an account?{' '}
+                  <a href="/register" style={{ color:'#a5b4fc', fontWeight:600, textDecoration:'none', transition:'color 0.2s' }}
+                    onMouseEnter={e => e.target.style.color='#60a5fa'}
+                    onMouseLeave={e => e.target.style.color='#a5b4fc'}
+                  >Create one →</a>
+                </p>
+              </div>
             </div>
 
           </div>
@@ -551,16 +528,29 @@ const LandingPage = () => {
         </div>
       </footer>
 
-      {/* Global keyframes */}
+      {/* Global keyframes & responsive overrides */}
       <style>{`
         @keyframes spin { to { transform: rotate(360deg); } }
         input::placeholder { color: rgba(100,116,139,0.55); }
+        
+        /* Mobile overrides */
         @media (max-width: 900px) {
-          section > div > div[style*="grid-template-columns: 1fr 1fr"] { grid-template-columns: 1fr !important; }
+          section > div > div[style*="grid-template-columns: 1fr 1fr"] { grid-template-columns: 1fr !important; gap: 32px !important; }
           section > div > div[style*="grid-template-columns: repeat(3"] { grid-template-columns: 1fr !important; }
-          section > div > div[style*="grid-template-columns: repeat(4"] { grid-template-columns: repeat(2,1fr) !important; }
-          nav > div > div > div:last-child { display: none !important; }
-          footer > div > div:first-child { grid-template-columns: 1fr 1fr !important; }
+          section > div > div[style*="grid-template-columns: repeat(4"] { grid-template-columns: repeat(2, 1fr) !important; }
+          nav > div > div:nth-child(2) { display: none !important; }
+          footer > div > div:first-child { grid-template-columns: 1fr 1fr !important; gap: 32px !important; }
+          h1 { font-size: 2.8rem !important; }
+        }
+        
+        @media (max-width: 600px) {
+          section > div > div[style*="grid-template-columns: repeat(4"] { grid-template-columns: 1fr !important; }
+          footer > div > div:first-child { grid-template-columns: 1fr !important; }
+          h1 { font-size: 2.2rem !important; text-align: center; }
+          p { text-align: center; margin: 0 auto !important; }
+          .hero-buttons { justify-content: center; }
+          nav { padding: 0 16px !important; }
+          section { padding: 50px 16px 30px !important; }
         }
       `}</style>
     </div>

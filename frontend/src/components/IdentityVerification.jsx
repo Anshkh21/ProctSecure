@@ -483,7 +483,7 @@ const IdentityVerification = () => {
               )}
             </div>
             
-            <div className="grid grid-cols-2 gap-4">
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
               <div className={`flex items-center space-x-3 p-3 rounded-lg ${
                 webcamEnabled ? 'bg-green-50' : 'bg-gray-50'
               }`}>
@@ -784,7 +784,7 @@ const IdentityVerification = () => {
             </div>
 
             <div className="space-y-4">
-              <div className="grid grid-cols-4 gap-4">
+              <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
                 <div className="text-center p-4 bg-green-50 rounded-lg">
                   <CheckCircle className="w-8 h-8 text-green-600 mx-auto mb-2" />
                   <p className="font-medium text-green-900">System</p>
@@ -868,7 +868,7 @@ const IdentityVerification = () => {
         <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6">
            <div className="mb-8">
               <Progress value={(currentStep / 5) * 100} className="h-2" />
-              <div className="flex justify-between mt-2 text-sm text-gray-600">
+              <div className="flex flex-col sm:flex-row justify-between mt-2 text-sm text-gray-600">
                  <span className={currentStep >= 1 ? "text-blue-600 font-medium" : ""}>System Check</span>
                  <span className={currentStep >= 2 ? "text-blue-600 font-medium" : ""}>ID Verification</span>
                  <span className={currentStep >= 3 ? "text-blue-600 font-medium" : ""}>Face Verification</span>

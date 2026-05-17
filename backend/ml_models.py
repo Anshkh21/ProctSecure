@@ -104,7 +104,8 @@ class ProctoringModel:
         # Initialize object detector (YOLO) - from research paper
         if OBJECT_DETECTION_AVAILABLE:
             try:
-                self.object_detector = ObjectDetector(confidence_threshold=0.5)
+                # Lower threshold to 0.35 to better detect smaller objects like cell phones on webcams
+                self.object_detector = ObjectDetector(confidence_threshold=0.35)
                 print("✅ Object detection (YOLO) initialized")
             except Exception as e:
                 print(f"Warning: Object detector initialization failed: {e}")

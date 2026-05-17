@@ -108,6 +108,21 @@ const GLOBAL_STYLES = `
     background: linear-gradient(90deg, #3b82f6, #6366f1);
     transition: width 0.8s ease;
   }
+  
+  /* Mobile Responsive Overrides */
+  @media (max-width: 900px) {
+    .dashboard-header { flex-direction: column !important; align-items: flex-start !important; gap: 16px !important; height: auto !important; padding: 16px 24px !important; }
+    .dashboard-header-right { width: 100%; justify-content: space-between !important; }
+    .welcome-section { flex-direction: column !important; align-items: flex-start !important; }
+    .welcome-actions { width: 100%; justify-content: space-between !important; margin-top: 16px; }
+  }
+  @media (max-width: 600px) {
+    .exam-grid { grid-template-columns: 1fr !important; }
+    .stats-grid { flex-direction: column !important; align-items: stretch !important; }
+    .stat-pill { width: 100% !important; justify-content: flex-start !important; }
+    .tip-banner { flex-direction: column !important; text-align: center !important; }
+    .main-container { padding: 0 16px !important; }
+  }
 `;
 
 /* ─── Countdown hook: returns { h, m, s, total } ─── */
@@ -175,7 +190,7 @@ function LiveClock() {
 /* ─── Animated stat pill ─── */
 function StatPill({ value, label, color, icon: Icon }) {
   return (
-    <div style={{
+    <div className="stat-pill" style={{
       display: 'flex', alignItems: 'center', gap: 10,
       background: 'rgba(255,255,255,0.85)',
       backdropFilter: 'blur(12px)',
@@ -232,7 +247,7 @@ function TipBanner() {
   }, []);
   const tip = TIPS[idx];
   return (
-    <div style={{
+    <div className="tip-banner" style={{
       background: 'linear-gradient(135deg, #fffbeb 0%, #fef3c7 100%)',
       border: '1.5px solid #fcd34d',
       borderRadius: 14, padding: '14px 20px',
@@ -686,13 +701,7 @@ const StudentDashboard = () => {
       <Particles />
 
       {/* ── HEADER ── */}
-      <header style={{
-        position: 'sticky', top: 0, zIndex: 50,
-        background: 'rgba(255,255,255,0.82)',
-        backdropFilter: 'blur(16px)',
-        borderBottom: '1px solid rgba(226,232,240,0.8)',
-        boxShadow: '0 1px 20px rgba(0,0,0,0.06)',
-      }}>
+      <nav className="dashboard-header" style={{ position: 'sticky', top: 0, zIndex: 50, background: 'rgba(255,255,255,0.82)', backdropFilter: 'blur(16px)', borderBottom: '1px solid rgba(226,232,240,0.8)', boxShadow: '0 1px 20px rgba(0,0,0,0.06)' }}>
         <div style={{ maxWidth: 1200, margin: '0 auto', padding: '0 24px', height: 64, display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
           {/* logo */}
           <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
@@ -711,7 +720,7 @@ const StudentDashboard = () => {
           </div>
 
           {/* clock + actions */}
-          <div style={{ display: 'flex', alignItems: 'center', gap: 16 }}>
+          <div className="dashboard-header-right" style={{ display: 'flex', alignItems: 'center', gap: 16 }}>
             <div style={{
               display: 'flex', alignItems: 'center', gap: 6,
               background: '#f1f5f9', borderRadius: 8, padding: '6px 12px',
@@ -760,13 +769,13 @@ const StudentDashboard = () => {
             </button>
           </div>
         </div>
-      </header>
+      </nav>
 
       {/* ── MAIN ── */}
-      <main style={{ maxWidth: 1200, margin: '0 auto', padding: '40px 24px', position: 'relative', zIndex: 1 }}>
+      <main className="main-container" style={{ maxWidth: 1200, margin: '0 auto', padding: '40px 24px', position: 'relative', zIndex: 1 }}>
 
         {/* HERO */}
-        <div style={{
+        <div className="welcome-section" style={{
           borderRadius: 24,
           background: 'linear-gradient(135deg, #1e3a5f 0%, #312e81 60%, #1e1b4b 100%)',
           padding: '36px 40px',
@@ -804,7 +813,7 @@ const StudentDashboard = () => {
             </div>
 
             {/* stat pills */}
-            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 10 }}>
+            <div className="stats-grid" style={{ display: 'flex', flexWrap: 'wrap', gap: 10 }}>
               <StatPill value={upcomingCount}  label="Upcoming"  color="#3b82f6" icon={Clock} />
               <StatPill value={activeCount}    label="Active"    color="#16a34a" icon={Zap} />
               <StatPill value={completedCount} label="Completed" color="#7c3aed" icon={CheckCircle} />

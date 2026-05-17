@@ -40,22 +40,6 @@ export const EnrollmentTab = ({  exams, token, toast }) => {
   const [emailInput, setEmailInput] = useState('');
   const [loadingEnrollments, setLoadingEnrollments] = useState(false);
   const [enrollingStudents, setEnrollingStudents] = useState(false);
-  const [availableStudents, setAvailableStudents] = useState([]);
-
-  useEffect(() => {
-    fetchAvailableStudents();
-  }, []);
-
-  const fetchAvailableStudents = async () => {
-    try {
-      const response = await axios.get(`${API}/proctor/available-students`, {
-        headers: { Authorization: `Bearer ${token}` }
-      });
-      setAvailableStudents(response.data);
-    } catch (error) {
-       console.error("Error fetching students:", error);
-    }
-  };
 
   const fetchEnrollments = async (examId) => {
     if (!examId) return;
@@ -103,7 +87,7 @@ export const EnrollmentTab = ({  exams, token, toast }) => {
 
     try {
       const response = await axios.post(
-        `${API}/proctor/exams/${selectedExam.id}/enroll`,
+        `${API}/proctor/exams/${selectedExam.id}/invite-by-email`,
         { student_emails: emails },
         { headers: { Authorization: `Bearer ${token}` } }
       );
@@ -115,11 +99,13 @@ export const EnrollmentTab = ({  exams, token, toast }) => {
         description: (
           <div className="space-y-1">
             <p>✅ Enrolled: {result.enrolled_count}</p>
+            {result.created_count > 0 && <p>👤 New Accounts Created: {result.created_count}</p>}
+            {result.emails_sent > 0 && <p>✉️ Emails Sent: {result.emails_sent}</p>}
             {result.already_enrolled.length > 0 && (
               <p>ℹ️ Already enrolled: {result.already_enrolled.length}</p>
             )}
-            {result.not_found.length > 0 && (
-              <p>❌ Not found: {result.not_found.length}</p>
+            {result.emails_failed > 0 && (
+              <p className="text-red-500">❌ Emails failed: {result.emails_failed}</p>
             )}
           </div>
         )
@@ -212,52 +198,20 @@ export const EnrollmentTab = ({  exams, token, toast }) => {
               )}
             </div>
             
-            {/* New Available Students Section */}
-            <div className="mt-8 pt-4 border-t">
-                <div className="flex justify-between items-center mb-2">
-                    <h3 className="font-semibold text-sm">Registered Students</h3>
-                    <Button variant="ghost" size="xs" onClick={fetchAvailableStudents}>
-                        <RefreshCw className="w-3 h-3" />
-                    </Button>
-                </div>
-                <div className="space-y-2 max-h-[300px] overflow-y-auto">
-                    {availableStudents.length === 0 ? (
-                        <p className="text-xs text-gray-500 italic">No registered students found.</p>
-                    ) : (
-                        availableStudents.map(student => (
-                            <div key={student.id} className="flex items-center justify-between p-2 bg-gray-50 rounded text-sm hover:bg-gray-100">
-                                <div className="truncate flex-1 mr-2">
-                                    <div className="font-medium truncate">{student.name}</div>
-                                    <div className="text-xs text-gray-500 truncate">{student.email}</div>
-                                </div>
-                                <Button 
-                                    size="sm" 
-                                    variant="outline" 
-                                    className="h-7 w-7 p-0"
-                                    onClick={() => handleAddStudentEmail(student.email)}
-                                    title="Add to enrollment list"
-                                >
-                                    <Plus className="w-3 h-3" />
-                                </Button>
-                            </div>
-                        ))
-                    )}
-                </div>
-            </div>
           </CardContent>
         </Card>
 
-        {/* Enrollment Management */}
+        {/* Action Area */}
         <Card className="lg:col-span-2">
           <CardHeader>
             <CardTitle className="flex items-center gap-2">
               <UserPlus className="w-5 h-5" />
-              Enroll Students
+              Invite & Enroll Students
             </CardTitle>
             <CardDescription>
               {selectedExam 
-                ? `Manage enrollments for: ${selectedExam.title}`
-                : 'Select an exam to manage enrollments'}
+                ? `Manage invitations for: ${selectedExam.title}`
+                : 'Select an exam to manage invitations'}
             </CardDescription>
           </CardHeader>
           <CardContent>

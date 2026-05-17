@@ -599,7 +599,7 @@ const ExamInterface = () => {
     }
   };
 
-  /* WebRTC Live Feed — commented out (re-enable when TURN infra is ready)
+  /* WebRTC Live Feed  commented out (re-enable when TURN infra is ready)
   // // ===========================================================================
   // // WebRTC Live Feed \u2014 Student (Publisher) Side
   // // ===========================================================================
@@ -780,7 +780,7 @@ const ExamInterface = () => {
             console.error("Monitoring cycle error:", err);
         }
 
-    }, 10000); 
+    }, 3000); 
 
     return () => clearInterval(interval);
   }, [hasStarted]);
@@ -921,8 +921,8 @@ const ExamInterface = () => {
       {/* Header */}
       <header className="bg-white border-b border-gray-200 sticky top-0 z-50">
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-3">
-          <div className="flex items-center justify-between">
-            <div className="flex items-center space-x-4">
+          <div className="flex flex-col md:flex-row items-center justify-between gap-4">
+            <div className="flex flex-wrap items-center justify-center space-x-4">
               <h1 className="text-lg font-semibold text-gray-900">{exam.title}</h1>
               <div className="flex items-center space-x-2">
                 <div className={`w-3 h-3 rounded-full ${
@@ -936,8 +936,8 @@ const ExamInterface = () => {
               </div>
             </div>
             
-            <div className="flex items-center space-x-6">
-              <div className="flex items-center space-x-2 text-lg font-mono">
+            <div className="flex flex-col-reverse sm:flex-row justify-between mt-6 gap-4">
+              <div className="flex flex-wrap justify-center sm:justify-start space-x-2 text-lg font-mono">
                 <Clock className="w-5 h-5 text-gray-600" />
                 <span className={(timeRemaining !== null && timeRemaining <= 600) ? 'text-red-600' : 'text-gray-900'}>
                   {timeRemaining !== null ? formatTime(timeRemaining) : '--:--'}
@@ -957,12 +957,12 @@ const ExamInterface = () => {
       </header>
 
       <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-6">
-        <div className="grid lg:grid-cols-4 gap-6">
+        <div className="grid grid-cols-1 lg:grid-cols-4 gap-6">
           {/* Main Question Area */}
           <div className="lg:col-span-3">
             <Card className="shadow-lg">
               <CardHeader>
-                <div className="flex items-center justify-between">
+                <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-2 mt-4 text-sm text-gray-500">
                   <CardTitle className="text-lg">
                     Question {currentQuestion + 1} of {questionsList.length}
                   </CardTitle>
@@ -1094,7 +1094,7 @@ const ExamInterface = () => {
                 </p>
               </CardHeader>
               <CardContent>
-                <div className="grid grid-cols-5 gap-2">
+                <div className="grid grid-cols-4 sm:grid-cols-5 gap-2">
                   {questionsList.map((question, index) => {
                     const isAnswered = answers[question.id] !== undefined;
                     const isCurrent = index === currentQuestion;

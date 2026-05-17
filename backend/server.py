@@ -21,6 +21,11 @@ from io import BytesIO
 from PIL import Image
 import urllib.parse
 from ml_models import ProctoringModel
+import smtplib
+from email.mime.text import MIMEText
+from email.mime.multipart import MIMEMultipart
+import random
+import string
 
 # ---------------------------------------------------------------------------
 # Logging â€” configured first so logger is available everywhere below
@@ -702,7 +707,20 @@ async def get_exams(current_user: dict = Depends(get_current_user)):
             return []
         
         exams = await db.exams.find({"id": {"$in": exam_ids}}).to_list(1000)
-        return [Exam(**exam) for exam in exams]
+        
+        # Override status for completed exams
+        completed_sessions = await db.exam_sessions.find({
+            "student_id": current_user["id"],
+            "exam_id": {"$in": exam_ids},
+            "status": "completed"
+        }).to_list(1000)
+        
+        completed_exam_ids = {s["exam_id"] for s in completed_sessions}
+        
+        # Filter out completed exams so they don't show on the dashboard at all
+        active_exams = [exam for exam in exams if exam["id"] not in completed_exam_ids]
+                
+        return [Exam(**exam) for exam in active_exams]
     elif current_user["role"] == "proctor":
         # Proctors see only their own exams
         exams = await db.exams.find({"proctor_id": current_user["id"]}).to_list(1000)
@@ -877,25 +895,220 @@ async def get_exam_questions(exam_id: str, current_user: dict = Depends(get_curr
 class EnrollStudentsRequest(BaseModel):
     student_emails: List[str]
 
-@api_router.post("/proctor/exams/{exam_id}/enroll")
-async def enroll_students(exam_id: str, request: EnrollStudentsRequest, proctor: dict = Depends(require_proctor)):
-    """Proctor enrolls students into their exam"""
+def generate_random_password(length=12):
+    characters = string.ascii_letters + string.digits
+    return ''.join(random.choice(characters) for i in range(length))
+
+def send_invite_email(to_email: str, exam_title: str, exam_date: str, duration: int, generated_password: str):
+    smtp_host = os.getenv("SMTP_HOST")
+    smtp_port = os.getenv("SMTP_PORT")
+    smtp_user = os.getenv("SMTP_USER")
+    smtp_pass = os.getenv("SMTP_PASS")
+    
+    if not all([smtp_host, smtp_port, smtp_user, smtp_pass]):
+        logger.warning(f"SMTP not configured. Skipping email to {to_email}")
+        return False
+        
+    try:
+        msg = MIMEMultipart("alternative")
+        msg["Subject"] = f"Invitation to Exam: {exam_title}"
+        msg["From"] = smtp_user
+        msg["To"] = to_email
+        
+        frontend_url = os.getenv("REACT_APP_FRONTEND_URL", "http://localhost:3000")
+        
+        html = f"""
+        <html>
+          <body style="font-family: Arial, sans-serif; line-height: 1.6; color: #333;">
+            <div style="max-width: 600px; margin: 0 auto; padding: 20px; border: 1px solid #e0e0e0; border-radius: 8px;">
+              <h2 style="color: #4f46e5;">ProctorSecure</h2>
+              <p>You have been invited to take an exam on ProctorSecure.</p>
+              
+              <div style="background-color: #f3f4f6; padding: 15px; border-radius: 6px; margin: 20px 0;">
+                <h3 style="margin-top: 0;">Exam Details</h3>
+                <p><strong>Exam:</strong> {exam_title}</p>
+                <p><strong>Scheduled Time:</strong> {exam_date}</p>
+                <p><strong>Duration:</strong> {duration} minutes</p>
+                <p><em>Note: You have a 10-minute entry window after the scheduled time to begin your exam.</em></p>
+              </div>
+              
+              <div style="background-color: #eef2ff; padding: 15px; border-radius: 6px; margin: 20px 0; border: 1px solid #c7d2fe;">
+                <h3 style="margin-top: 0; color: #4338ca;">Your Login Credentials</h3>
+                <p><strong>Login URL:</strong> <a href="{frontend_url}">{frontend_url}</a></p>
+                <p><strong>Email:</strong> {to_email}</p>
+                <p><strong>Password:</strong> <span style="font-family: monospace; background: #e2e8f0; padding: 2px 6px; border-radius: 4px;">{generated_password}</span></p>
+              </div>
+              
+              <p>Please keep these credentials secure. You will need them to access your exam session.</p>
+              <br/>
+              <p style="font-size: 0.9em; color: #6b7280;">If you have any questions, please contact your proctor or instructor.</p>
+            </div>
+          </body>
+        </html>
+        """
+        
+        part = MIMEText(html, "html")
+        msg.attach(part)
+        
+        with smtplib.SMTP(smtp_host, int(smtp_port)) as server:
+            server.starttls()
+            server.login(smtp_user, smtp_pass)
+            server.sendmail(smtp_user, to_email, msg.as_string())
+            
+        return True
+    except Exception as e:
+        logger.error(f"Failed to send invite email to {to_email}: {e}")
+        return False
+
+def send_enrollment_email(to_email: str, exam_title: str, exam_date: str, duration: int):
+    smtp_host = os.getenv("SMTP_HOST")
+    smtp_port = os.getenv("SMTP_PORT")
+    smtp_user = os.getenv("SMTP_USER")
+    smtp_pass = os.getenv("SMTP_PASS")
+    
+    if not all([smtp_host, smtp_port, smtp_user, smtp_pass]):
+        logger.warning(f"SMTP not configured. Skipping email to {to_email}")
+        return False
+        
+    try:
+        msg = MIMEMultipart("alternative")
+        msg["Subject"] = f"Enrollment Notification: {exam_title}"
+        msg["From"] = smtp_user
+        msg["To"] = to_email
+        
+        frontend_url = os.getenv("REACT_APP_FRONTEND_URL", "http://localhost:3000")
+        
+        html = f"""
+        <html>
+          <body style="font-family: Arial, sans-serif; line-height: 1.6; color: #333;">
+            <div style="max-width: 600px; margin: 0 auto; padding: 20px; border: 1px solid #e0e0e0; border-radius: 8px;">
+              <h2 style="color: #4f46e5;">ProctorSecure</h2>
+              <p>You have been enrolled in a new exam on ProctorSecure.</p>
+              
+              <div style="background-color: #f3f4f6; padding: 15px; border-radius: 6px; margin: 20px 0;">
+                <h3 style="margin-top: 0;">Exam Details</h3>
+                <p><strong>Exam:</strong> {exam_title}</p>
+                <p><strong>Scheduled Time:</strong> {exam_date}</p>
+                <p><strong>Duration:</strong> {duration} minutes</p>
+                <p><em>Note: You have a 10-minute entry window after the scheduled time to begin your exam.</em></p>
+              </div>
+              
+              <p>Please log in to your dashboard to view your upcoming exams:</p>
+              <p><strong>Login URL:</strong> <a href="{frontend_url}">{frontend_url}</a></p>
+              <br/>
+              <p style="font-size: 0.9em; color: #6b7280;">If you have any questions, please contact your proctor or instructor.</p>
+            </div>
+          </body>
+        </html>
+        """
+        
+        part = MIMEText(html, "html")
+        msg.attach(part)
+        
+        with smtplib.SMTP(smtp_host, int(smtp_port)) as server:
+            server.starttls()
+            server.login(smtp_user, smtp_pass)
+            server.sendmail(smtp_user, to_email, msg.as_string())
+            
+        return True
+    except Exception as e:
+        logger.error(f"Failed to send enrollment email to {to_email}: {e}")
+        return False
+
+@api_router.post("/proctor/exams/{exam_id}/invite-by-email")
+async def invite_students_by_email(exam_id: str, request: EnrollStudentsRequest, proctor: dict = Depends(require_proctor)):
+    """Proctor invites students into their exam. Creates accounts if needed and sends emails."""
     # Verify exam ownership
     await verify_exam_ownership(exam_id, proctor["id"])
     
+    exam = await db.exams.find_one({"id": exam_id})
+    if not exam:
+        raise HTTPException(status_code=404, detail="Exam not found")
+        
+    created_count = 0
+    already_existed = 0
     enrolled_count = 0
     already_enrolled = []
-    not_found = []
+    emails_sent = 0
+    emails_failed = 0
+    
+    # Format exam date for email
+    exam_date_str = exam["scheduled_at"]
+    if isinstance(exam_date_str, datetime):
+        ist_time = exam_date_str + timedelta(hours=5, minutes=30)
+        exam_date_formatted = ist_time.strftime("%B %d, %Y at %I:%M %p IST")
+    else:
+        try:
+            cleaned_str = str(exam_date_str).replace('Z', '+00:00')
+            dt = datetime.fromisoformat(cleaned_str)
+            dt_naive = dt.replace(tzinfo=None)
+            ist_time = dt_naive + timedelta(hours=5, minutes=30)
+            exam_date_formatted = ist_time.strftime("%B %d, %Y at %I:%M %p IST")
+        except Exception:
+            exam_date_formatted = str(exam_date_str)
     
     for email in request.student_emails:
-        # Find student by email
-        student = await db.users.find_one({"email": email, "role": "student"})
+        email = email.lower().strip()
+        if not email:
+            continue
+            
+        # 1. Ensure student exists
+        student = await db.users.find_one({"email": email})
+        generated_password = None
         
         if not student:
-            not_found.append(email)
-            continue
+            # We need to create a new student account
+            generated_password = generate_random_password()
+            
+            # Send the email FIRST to ensure atomicity. If it fails, abort for this user.
+            success = send_invite_email(
+                to_email=email,
+                exam_title=exam["title"],
+                exam_date=exam_date_formatted,
+                duration=exam["duration"],
+                generated_password=generated_password
+            )
+            
+            if not success:
+                emails_failed += 1
+                continue  # Skip account creation and enrollment!
+                
+            emails_sent += 1
+            
+            hashed_password = bcrypt.hashpw(generated_password.encode(), bcrypt.gensalt()).decode()
+            
+            student = {
+                "id": str(uuid.uuid4()),
+                "name": email.split("@")[0],  # Default name from email
+                "email": email,
+                "role": "student",
+                "institution": proctor.get("institution", "Unknown"),
+                "password_hash": hashed_password,
+                "created_at": datetime.utcnow()
+            }
+            await db.users.insert_one(student)
+            created_count += 1
+        else:
+            if student["role"] != "student":
+                logger.warning(f"Attempted to invite {email} but they are not a student.")
+                continue
+                
+            # Send the enrollment email FIRST to ensure atomicity. If it fails, abort.
+            success = send_enrollment_email(
+                to_email=email,
+                exam_title=exam["title"],
+                exam_date=exam_date_formatted,
+                duration=exam["duration"]
+            )
+            
+            if not success:
+                emails_failed += 1
+                continue
+                
+            emails_sent += 1
+            already_existed += 1
         
-        # Check if already enrolled
+        # 2. Enroll student in exam
         existing_enrollment = await db.exam_enrollments.find_one({
             "exam_id": exam_id,
             "student_id": student["id"]
@@ -903,26 +1116,26 @@ async def enroll_students(exam_id: str, request: EnrollStudentsRequest, proctor:
         
         if existing_enrollment:
             already_enrolled.append(email)
-            continue
-        
-        # Create enrollment
-        enrollment = {
-            "id": str(uuid.uuid4()),
-            "exam_id": exam_id,
-            "student_id": student["id"],
-            "enrolled_at": datetime.utcnow(),
-            "enrolled_by": proctor["id"],
-            "status": "enrolled"
-        }
-        
-        await db.exam_enrollments.insert_one(enrollment)
-        enrolled_count += 1
-    
+        else:
+            enrollment = {
+                "id": str(uuid.uuid4()),
+                "exam_id": exam_id,
+                "student_id": student["id"],
+                "enrolled_at": datetime.utcnow(),
+                "enrolled_by": proctor["id"],
+                "status": "enrolled"
+            }
+            await db.exam_enrollments.insert_one(enrollment)
+            enrolled_count += 1
+            
     return {
         "message": f"Successfully enrolled {enrolled_count} student(s)",
         "enrolled_count": enrolled_count,
         "already_enrolled": already_enrolled,
-        "not_found": not_found
+        "created_count": created_count,
+        "already_existed": already_existed,
+        "emails_sent": emails_sent,
+        "emails_failed": emails_failed
     }
 
 @api_router.get("/proctor/exams/{exam_id}/enrollments")
@@ -1174,6 +1387,18 @@ async def start_exam_session(
             raise HTTPException(
                 status_code=403, 
                 detail="You are not enrolled in this exam. Please contact your proctor."
+            )
+            
+        # Block re-entry if already completed
+        completed_session = await db.exam_sessions.find_one({
+            "student_id": current_user["id"],
+            "exam_id": exam_id,
+            "status": "completed"
+        })
+        if completed_session:
+            raise HTTPException(
+                status_code=403,
+                detail="You have already completed this exam and cannot rejoin."
             )
             
         # Check if session already exists
@@ -1651,16 +1876,51 @@ async def analyze_frame_enhanced(
         if all_warnings:
             for warning in all_warnings:
                 flag_type, severity = _classify_warning(warning)
+                
+                # Check for continuous audio violation to roll up into a single flag
+                if flag_type == "audio_violation":
+                    five_seconds_ago = datetime.utcnow() - timedelta(seconds=5)
+                    recent_audio_flag = await db.proctoring_flags.find_one({
+                        "session_id": session_id,
+                        "type": "audio_violation",
+                        "timestamp": {"$gte": five_seconds_ago}
+                    }, sort=[("timestamp", -1)])
+                    
+                    if recent_audio_flag:
+                        # Increment duration (default to 1 if not present) and update timestamp
+                        current_duration = recent_audio_flag.get("duration", 1)
+                        new_duration = current_duration + 1
+                        await db.proctoring_flags.update_one(
+                            {"_id": recent_audio_flag["_id"]},
+                            {
+                                "$set": {
+                                    "timestamp": datetime.utcnow(),
+                                    "duration": new_duration,
+                                    "description": f"Continuous high audio for {new_duration} seconds"
+                                }
+                            }
+                        )
+                        continue  # Skip creating a new flag
+                
+                # For non-audio or first audio violation, create a new flag
                 evidence = request.image_data if flag_type != "audio_violation" else None
+                description = warning if flag_type != "audio_violation" else "Continuous high audio for 1 seconds"
+                
                 flag = ProctoringFlag(
                     student_id=current_user["id"],
                     session_id=session_id,
                     type=flag_type,
-                    description=warning,
+                    description=description,
                     severity=severity,
                     evidence_image=evidence
                 )
-                await db.proctoring_flags.insert_one(flag.model_dump())
+                
+                flag_dict = flag.model_dump()
+                if flag_type == "audio_violation":
+                    flag_dict["duration"] = 1
+                    
+                await db.proctoring_flags.insert_one(flag_dict)
+                
         # Create flags for Research Paper Violations (High Severity)
         if result.get('should_alert'):
             alert_level = result['anomaly_scoring'].get('alert_level', 'MEDIUM')
@@ -2336,7 +2596,7 @@ async def reset_database_collection(
 app.include_router(api_router)
 
 # ===========================================================================
-# WebRTC Signaling � COMMENTED OUT (re-enable when TURN infra is ready)
+# WebRTC Signaling � COMMENTED OUT (re-enable when TURN infra is ready)
 # ===========================================================================
 # ===========================================================================
 # WebRTC Signaling — Production-grade WebSocket relay
