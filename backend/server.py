@@ -21,9 +21,8 @@ from io import BytesIO
 from PIL import Image
 import urllib.parse
 from ml_models import ProctoringModel
-import smtplib
-from email.mime.text import MIMEText
-from email.mime.multipart import MIMEMultipart
+import urllib.request
+import json
 import random
 import string
 
@@ -900,21 +899,14 @@ def generate_random_password(length=12):
     return ''.join(random.choice(characters) for i in range(length))
 
 def send_invite_email(to_email: str, exam_title: str, exam_date: str, duration: int, generated_password: str):
-    smtp_host = os.getenv("SMTP_HOST")
-    smtp_port = os.getenv("SMTP_PORT")
-    smtp_user = os.getenv("SMTP_USER")
-    smtp_pass = os.getenv("SMTP_PASS")
+    brevo_api_key = os.getenv("BREVO_API_KEY")
+    sender_email = os.getenv("BREVO_SENDER_EMAIL", os.getenv("SMTP_USER", "noreply@proctorsecure.com"))
     
-    if not all([smtp_host, smtp_port, smtp_user, smtp_pass]):
-        logger.warning(f"SMTP not configured. Skipping email to {to_email}")
+    if not brevo_api_key:
+        logger.warning(f"BREVO_API_KEY not configured. Skipping email to {to_email}")
         return False
         
     try:
-        msg = MIMEMultipart("alternative")
-        msg["Subject"] = f"Invitation to Exam: {exam_title}"
-        msg["From"] = smtp_user
-        msg["To"] = to_email
-        
         frontend_url = os.getenv("REACT_APP_FRONTEND_URL", "http://localhost:3000")
         
         html = f"""
@@ -947,35 +939,43 @@ def send_invite_email(to_email: str, exam_title: str, exam_date: str, duration: 
         </html>
         """
         
-        part = MIMEText(html, "html")
-        msg.attach(part)
+        data = {
+            "sender": {"email": sender_email, "name": "ProctorSecure"},
+            "to": [{"email": to_email}],
+            "subject": f"Invitation to Exam: {exam_title}",
+            "htmlContent": html
+        }
         
-        with smtplib.SMTP(smtp_host, int(smtp_port)) as server:
-            server.starttls()
-            server.login(smtp_user, smtp_pass)
-            server.sendmail(smtp_user, to_email, msg.as_string())
-            
-        return True
+        req = urllib.request.Request(
+            "https://api.brevo.com/v3/smtp/email",
+            data=json.dumps(data).encode("utf-8"),
+            headers={
+                "accept": "application/json",
+                "api-key": brevo_api_key,
+                "content-type": "application/json"
+            },
+            method="POST"
+        )
+        
+        with urllib.request.urlopen(req) as response:
+            if response.status in (200, 201, 202):
+                return True
+            else:
+                logger.error(f"Failed to send invite email to {to_email}: {response.read()}")
+                return False
     except Exception as e:
         logger.error(f"Failed to send invite email to {to_email}: {e}")
         return False
 
 def send_enrollment_email(to_email: str, exam_title: str, exam_date: str, duration: int):
-    smtp_host = os.getenv("SMTP_HOST")
-    smtp_port = os.getenv("SMTP_PORT")
-    smtp_user = os.getenv("SMTP_USER")
-    smtp_pass = os.getenv("SMTP_PASS")
+    brevo_api_key = os.getenv("BREVO_API_KEY")
+    sender_email = os.getenv("BREVO_SENDER_EMAIL", os.getenv("SMTP_USER", "noreply@proctorsecure.com"))
     
-    if not all([smtp_host, smtp_port, smtp_user, smtp_pass]):
-        logger.warning(f"SMTP not configured. Skipping email to {to_email}")
+    if not brevo_api_key:
+        logger.warning(f"BREVO_API_KEY not configured. Skipping email to {to_email}")
         return False
         
     try:
-        msg = MIMEMultipart("alternative")
-        msg["Subject"] = f"Enrollment Notification: {exam_title}"
-        msg["From"] = smtp_user
-        msg["To"] = to_email
-        
         frontend_url = os.getenv("REACT_APP_FRONTEND_URL", "http://localhost:3000")
         
         html = f"""
@@ -1002,15 +1002,30 @@ def send_enrollment_email(to_email: str, exam_title: str, exam_date: str, durati
         </html>
         """
         
-        part = MIMEText(html, "html")
-        msg.attach(part)
+        data = {
+            "sender": {"email": sender_email, "name": "ProctorSecure"},
+            "to": [{"email": to_email}],
+            "subject": f"Enrollment Notification: {exam_title}",
+            "htmlContent": html
+        }
         
-        with smtplib.SMTP(smtp_host, int(smtp_port)) as server:
-            server.starttls()
-            server.login(smtp_user, smtp_pass)
-            server.sendmail(smtp_user, to_email, msg.as_string())
-            
-        return True
+        req = urllib.request.Request(
+            "https://api.brevo.com/v3/smtp/email",
+            data=json.dumps(data).encode("utf-8"),
+            headers={
+                "accept": "application/json",
+                "api-key": brevo_api_key,
+                "content-type": "application/json"
+            },
+            method="POST"
+        )
+        
+        with urllib.request.urlopen(req) as response:
+            if response.status in (200, 201, 202):
+                return True
+            else:
+                logger.error(f"Failed to send enrollment email to {to_email}: {response.read()}")
+                return False
     except Exception as e:
         logger.error(f"Failed to send enrollment email to {to_email}: {e}")
         return False
