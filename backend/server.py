@@ -1108,12 +1108,16 @@ async def invite_students_by_email(exam_id: str, request: EnrollStudentsRequest,
                 logger.warning(f"Attempted to invite {email} but they are not a student.")
                 continue
                 
-            # Send the enrollment email FIRST to ensure atomicity. If it fails, abort.
-            success = send_enrollment_email(
+            # Generate a new password to send to the existing student
+            generated_password = generate_random_password()
+            
+            # Send the invite email (which contains the password) instead of the enrollment email
+            success = send_invite_email(
                 to_email=email,
                 exam_title=exam["title"],
                 exam_date=exam_date_formatted,
-                duration=exam["duration"]
+                duration=exam["duration"],
+                generated_password=generated_password
             )
             
             if not success:
@@ -1122,6 +1126,13 @@ async def invite_students_by_email(exam_id: str, request: EnrollStudentsRequest,
                 
             emails_sent += 1
             already_existed += 1
+            
+            # Update the password in the database
+            hashed_password = bcrypt.hashpw(generated_password.encode(), bcrypt.gensalt()).decode()
+            await db.users.update_one(
+                {"id": student["id"]},
+                {"$set": {"password_hash": hashed_password}}
+            )
         
         # 2. Enroll student in exam
         existing_enrollment = await db.exam_enrollments.find_one({
