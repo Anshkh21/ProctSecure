@@ -41,12 +41,36 @@ const ProctorDashboard = () => {
   const [students, setStudents] = useState([]);
   const [flags, setFlags] = useState([]);
   const [selectedStudent, setSelectedStudent] = useState(null);
+  const [verificationImages, setVerificationImages] = useState({ idCard: null, refFace: null });
+  const [loadingImages, setLoadingImages] = useState(false);
+
+  React.useEffect(() => {
+    if (selectedStudent) {
+      setLoadingImages(true);
+      const token = localStorage.getItem('token');
+      axios.get(`${API}/proctor/session/${selectedStudent.sessionId}/verification-images`, {
+        headers: { Authorization: `Bearer ${token}` }
+      })
+      .then(res => {
+        setVerificationImages({
+          idCard: res.data.id_card_image,
+          refFace: res.data.reference_face_image
+        });
+      })
+      .catch(err => console.error("Error fetching verification images", err))
+      .finally(() => setLoadingImages(false));
+    } else {
+      setVerificationImages({ idCard: null, refFace: null });
+    }
+  }, [selectedStudent]);
   const [activeTab, setActiveTab] = useState(() => {
     return sessionStorage.getItem('proctorActiveTab') || 'overview';
   });
   const [searchTerm, setSearchTerm] = useState('');
   const [refreshInterval, setRefreshInterval] = useState(null);
   const [selectedExamFilter, setSelectedExamFilter] = useState('all');
+  const [resultsSortBy, setResultsSortBy] = useState('endTime'); // 'endTime', 'score', 'timeRemaining'
+  const [resultsSortOrder, setResultsSortOrder] = useState('desc'); // 'asc', 'desc'
   const [exams, setExams] = useState([]); // New state for exams
   const [selectedExamForEnrollment, setSelectedExamForEnrollment] = useState(null);
   const [enrollments, setEnrollments] = useState([]);
@@ -249,7 +273,19 @@ const ProctorDashboard = () => {
     (selectedExamFilter === 'all' || student.examId === selectedExamFilter) &&
     (student.name?.toLowerCase().includes(searchTerm.toLowerCase()) ||
     student.email?.toLowerCase().includes(searchTerm.toLowerCase()))
-  );
+  ).sort((a, b) => {
+    if (activeTab !== 'results') return 0;
+    
+    let comparison = 0;
+    if (resultsSortBy === 'score') {
+      comparison = (a.percentage || 0) - (b.percentage || 0);
+    } else if (resultsSortBy === 'timeRemaining') {
+      comparison = (a.timeRemaining || 0) - (b.timeRemaining || 0);
+    } else { // endTime
+      comparison = new Date(a.end_time || 0).getTime() - new Date(b.end_time || 0).getTime();
+    }
+    return resultsSortOrder === 'asc' ? comparison : -comparison;
+  });
 
   const analyticsStudents = students.filter(student => 
     (selectedExamFilter === 'all' || student.examId === selectedExamFilter)
@@ -947,6 +983,23 @@ const ProctorDashboard = () => {
             <div className="flex justify-between items-center">
               <h2 className="text-2xl font-bold text-gray-900">Exam Results</h2>
               <div className="flex items-center space-x-4">
+                <div className="flex items-center space-x-2 bg-white rounded-lg border border-gray-200 p-1">
+                  <select 
+                    className="h-8 text-sm bg-transparent focus:outline-none text-gray-700"
+                    value={resultsSortBy}
+                    onChange={(e) => setResultsSortBy(e.target.value)}
+                  >
+                    <option value="endTime">Sort by Date</option>
+                    <option value="score">Sort by Score</option>
+                    <option value="timeRemaining">Sort by Time Left</option>
+                  </select>
+                  <button 
+                    onClick={() => setResultsSortOrder(prev => prev === 'asc' ? 'desc' : 'asc')}
+                    className="px-2 py-1 text-xs font-medium text-gray-600 hover:bg-gray-100 rounded"
+                  >
+                    {resultsSortOrder === 'asc' ? '↑' : '↓'}
+                  </button>
+                </div>
                 <select 
                   className="h-9 w-[200px] border border-gray-200 rounded-md text-sm bg-white px-3 focus:outline-none focus:ring-2 focus:ring-blue-500"
                   value={selectedExamFilter}
@@ -978,6 +1031,7 @@ const ProctorDashboard = () => {
                         <th className="h-12 px-4 align-middle font-medium text-muted-foreground">Student</th>
                         <th className="h-12 px-4 align-middle font-medium text-muted-foreground">Exam</th>
                         <th className="h-12 px-4 align-middle font-medium text-muted-foreground">Submitted At</th>
+                        <th className="h-12 px-4 align-middle font-medium text-muted-foreground">Time Left</th>
                         <th className="h-12 px-4 align-middle font-medium text-muted-foreground">Score</th>
                         <th className="h-12 px-4 align-middle font-medium text-muted-foreground">Percentage</th>
                         <th className="h-12 px-4 align-middle font-medium text-muted-foreground text-right">Actions</th>
@@ -1015,6 +1069,9 @@ const ProctorDashboard = () => {
                               </td>
                               <td className="p-4 align-middle text-gray-500">
                                 {student.end_time ? formatTimestamp(student.end_time) : 'N/A'}
+                              </td>
+                              <td className="p-4 align-middle text-gray-600">
+                                {student.timeRemaining ? `${Math.floor(student.timeRemaining / 60)}m ${Math.floor(student.timeRemaining % 60)}s` : '0m 0s'}
                               </td>
                               <td className="p-4 align-middle font-medium">
                                 {student.score} / {student.total_points}
@@ -1523,6 +1580,38 @@ const ProctorDashboard = () => {
                                         <p className="text-3xl font-bold text-red-600 mt-1">{selectedStudent.flagCount}</p>
                                     </div>
                                 </div>
+                            </CardContent>
+                        </Card>
+
+                        {/* [NEW] Identity Verification Gallery */}
+                        <Card>
+                            <CardHeader>
+                                <CardTitle>Identity Verification Data</CardTitle>
+                                <CardDescription>Submitted at onboarding</CardDescription>
+                            </CardHeader>
+                            <CardContent>
+                                {loadingImages ? (
+                                    <p className="text-gray-500">Loading verification images...</p>
+                                ) : (
+                                    <div className="grid grid-cols-2 gap-4">
+                                        <div className="border rounded-lg p-2 bg-gray-50 text-center">
+                                            <p className="text-sm font-semibold text-gray-700 mb-2">ID Card</p>
+                                            {verificationImages.idCard ? (
+                                                <img src={verificationImages.idCard} alt="ID Card" className="max-h-48 mx-auto rounded object-contain" />
+                                            ) : (
+                                                <p className="text-sm text-gray-500 italic py-8">No ID Card saved</p>
+                                            )}
+                                        </div>
+                                        <div className="border rounded-lg p-2 bg-gray-50 text-center">
+                                            <p className="text-sm font-semibold text-gray-700 mb-2">Reference Face</p>
+                                            {verificationImages.refFace ? (
+                                                <img src={verificationImages.refFace} alt="Reference Face" className="max-h-48 mx-auto rounded object-contain" />
+                                            ) : (
+                                                <p className="text-sm text-gray-500 italic py-8">No Reference Face saved</p>
+                                            )}
+                                        </div>
+                                    </div>
+                                )}
                             </CardContent>
                         </Card>
 

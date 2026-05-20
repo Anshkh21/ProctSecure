@@ -181,6 +181,7 @@ class ExamSession(BaseModel):
     webcam_enabled: bool = False
     face_detected: bool = False
     status: str = "pending"  # active, completed, terminated
+    reference_face_image: Optional[str] = None
 
 class ExamEnrollment(BaseModel):
     id: str = Field(default_factory=lambda: str(uuid.uuid4()))
@@ -1445,10 +1446,56 @@ async def get_proctor_flags(proctor: dict = Depends(require_proctor)):
             
     return result_flags
 
+@api_router.get("/proctor/session/{session_id}/verification-images")
+async def get_verification_images(session_id: str, proctor: dict = Depends(require_proctor)):
+    """Fetch the ID card and reference face images for a specific session"""
+    session = await db.exam_sessions.find_one({"id": session_id})
+    if not session:
+        raise HTTPException(status_code=404, detail="Session not found")
+        
+    await verify_exam_ownership(session["exam_id"], proctor["id"])
+    
+    # Try to find in verifications (where ID card lives)
+    verification = await db.exam_verifications.find_one({
+        "student_id": session["student_id"],
+        "exam_id": session["exam_id"]
+    })
+    
+    id_card = verification.get("id_card_image") if verification else None
+    ref_face = session.get("reference_face_image") or (verification.get("reference_face_image") if verification else None)
+    
+    return {
+        "id_card_image": id_card,
+        "reference_face_image": ref_face
+    }
+
 # Face detection route
 @api_router.post("/verification/face-detect", response_model=FaceDetectionResponse)
 async def detect_face(request: FaceDetectionRequest):
     return detect_faces_in_image(request.image_data)
+
+class FlagReport(BaseModel):
+    type: str
+    description: str
+    severity: str = "medium"
+
+@api_router.post("/session/{session_id}/report-violation")
+async def report_violation(session_id: str, flag: FlagReport, current_user: dict = Depends(get_current_user)):
+    """Allow the frontend to instantly report a cheating violation (like tab switch or exit fullscreen)"""
+    session = await db.exam_sessions.find_one({"id": session_id})
+    if not session or session["student_id"] != current_user["id"]:
+        raise HTTPException(status_code=403, detail="Not authorized")
+    
+    flag_doc = {
+        "id": str(uuid.uuid4()),
+        "session_id": session_id,
+        "type": flag.type,
+        "description": flag.description,
+        "severity": flag.severity,
+        "timestamp": datetime.utcnow()
+    }
+    await db.proctoring_flags.insert_one(flag_doc)
+    return {"status": "success", "flag_id": flag_doc["id"]}
 
 # Exam session routes
 # Exam session routes
@@ -1530,6 +1577,7 @@ async def start_exam_session(
         verification_status="verified" if current_user["role"] == "student" else "pending",
         verification_completed_at=verification_record.get("verified_at") if current_user["role"] == "student" else None,
         consent_accepted=bool(verification_record.get("consent_accepted")) if current_user["role"] == "student" else False,
+        reference_face_image=verification_record.get("reference_face_image") if current_user["role"] == "student" else None,
         webcam_enabled=True
     )
     
@@ -1774,17 +1822,8 @@ async def complete_verification(
                 warnings=face_analysis.get("warnings", []),
             )
 
-        face_match_result = await run_in_threadpool(
-            proctor_model.verify_face_match,
-            id_image,
-            face_image
-        )
-        if not face_match_result.get("verified"):
-            return VerificationResponse(
-                is_valid=False,
-                message="Face verification failed. Your face did not match the provided ID card.",
-                warnings=["Face mismatch"],
-            )
+        # [NEW]: We no longer match the face against the ID card here.
+        # Instead, we save this initial face scan as the reference for the entire exam.
 
         room_scan_result = await analyze_room_scan(request.room_image_data)
         if not room_scan_result["is_valid"]:
@@ -1809,7 +1848,8 @@ async def complete_verification(
                     "consent_accepted_at": datetime.utcnow(),
                     "consumed_at": None,
                     "room_scan_warnings": room_scan_result["warnings"],
-                    "face_match_distance": face_match_result.get("distance"),
+                    "reference_face_image": request.face_image_data,
+                    "id_card_image": request.id_image_data,
                     "updated_at": datetime.utcnow(),
                 }
             },
@@ -1837,8 +1877,10 @@ def _classify_warning(warning: str) -> tuple:
         return "no_face", "high"
     if "Multiple faces" in warning:
         return "multiple_faces", "high"
-    if "Audio" in warning or "Tab Switch" in warning:
+    if "Tab Switch" in warning:
         return "env_violation", "medium"
+    if "Audio" in warning or "Mouth open" in warning or "Talking" in warning:
+        return "audio_violation", "medium"
     if "Looking" in warning or "Gaze deviation" in warning:
         return "gaze_violation", "medium"
     if "Dark" in warning or "Low light" in warning:
@@ -1849,6 +1891,8 @@ def _classify_warning(warning: str) -> tuple:
         return "audio_violation", "medium"
     if "Drowsy" in warning or "Eyes closed" in warning:
         return "drowsiness", "low"
+    if "Unrecognized person" in warning:
+        return "wrong_person", "high"
     return "suspicious_behavior", "low"
 
 
@@ -1903,9 +1947,11 @@ async def monitor_session(
             }}
         )
 
+        display_warnings = [w for w in analysis["warnings"] if "Audio" not in w and "Talking" not in w]
+        
         return {
             "status": "success", 
-            "warnings": analysis["warnings"],
+            "warnings": display_warnings,
             "gaze": analysis["gaze_direction"]
         }
     except Exception as e:
@@ -1933,8 +1979,17 @@ async def analyze_frame_enhanced(
 
         image_np = decode_base64_image_to_bgr(request.image_data)
 
+        # Get reference face if available
+        reference_face_image_np = None
+        reference_face_b64 = session.get("reference_face_image")
+        if reference_face_b64:
+            try:
+                reference_face_image_np = decode_base64_image_to_bgr(reference_face_b64)
+            except Exception as e:
+                logger.error(f"Failed to decode reference face for session {session_id}: {e}")
+
         # Run enhanced analysis (includes object detection + anomaly scoring)
-        result = await run_in_threadpool(proctor_model.enhanced_analyze_frame, image_np)
+        result = await run_in_threadpool(proctor_model.enhanced_analyze_frame, image_np, reference_face_image_np)
         
         # Merge backend and frontend warnings
         all_warnings = result.get("warnings", []) + request.client_warnings
@@ -2042,11 +2097,15 @@ async def analyze_frame_enhanced(
                     )
                     await db.proctoring_flags.insert_one(flag.model_dump())
         
+        # Return response to frontend, but filter out audio warnings
+        # so they don't show up in the student's anomaly UI/toasts
+        display_warnings = [w for w in all_warnings if "Audio" not in w and "Talking" not in w]
+
         return {
             "status": "success",
-            "analysis": result,
-            "warnings": all_warnings,
-            "timestamp": datetime.utcnow().isoformat()
+            "warnings": display_warnings,
+            "gaze": result.get("gaze_direction", "unknown"),
+            "analysis": result
         }
         
     except Exception as e:
@@ -2108,14 +2167,21 @@ async def submit_exam(
                     score += points
 
         # Update session
+        end_time = datetime.utcnow()
+        start_time = session.get("start_time", end_time)
+        time_taken_seconds = (end_time - start_time).total_seconds()
+        exam_duration_seconds = exam.get("duration", 0) * 60
+        time_remaining = max(0, exam_duration_seconds - time_taken_seconds) if exam_duration_seconds > 0 else 0
+
         update_data = {
             "status": "completed",
-            "end_time": datetime.utcnow(),
+            "end_time": end_time,
             "answers": student_answers,
             "verification_status": "verified",
             "score": score,
             "total_points": total_points,
-            "percentage": (score / total_points * 100) if total_points > 0 else 0
+            "percentage": (score / total_points * 100) if total_points > 0 else 0,
+            "time_remaining": time_remaining
         }
         
         await db.exam_sessions.update_one(

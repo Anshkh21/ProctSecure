@@ -285,14 +285,29 @@ const ExamInterface = () => {
     // Force immediately check fullscreen status
     setIsFullscreen(!!document.fullscreenElement);
 
+    const reportInstantViolation = (type, desc, severity) => {
+        const sessionId = localStorage.getItem('examSessionId');
+        const token = localStorage.getItem('token');
+        if (sessionId && token) {
+            axios.post(`${API_URL}/session/${sessionId}/report-violation`, {
+                type: type,
+                description: desc,
+                severity: severity
+            }, {
+                headers: { Authorization: `Bearer ${token}` }
+            }).catch(e => console.error("Failed to report violation", e));
+        }
+    };
+
     // Fullscreen Listener
     const handleFullScreenChange = () => {
        const isFull = !!document.fullscreenElement;
        setIsFullscreen(isFull);
        if (!isFull) {
-            // Grace period check: Don't flag in first 5 seconds of exam
-            // (Implementing via simple timestamp check or ref)
-            clientWarningsRef.current.push("Exited Fullscreen");
+            if (!fullscreenGraceRef.current) {
+                clientWarningsRef.current.push("Exited Fullscreen");
+                reportInstantViolation("fullscreen_exit", "Student exited full screen mode", "high");
+            }
         }
     };
     document.addEventListener('fullscreenchange', handleFullScreenChange);
@@ -304,10 +319,11 @@ const ExamInterface = () => {
         if (document.hidden) {
             toast({
                 title: "Warning: Tab Switch Detected",
-                description: "Leaving the exam tab is prohibited.",
+                description: "Leaving the exam tab is prohibited and has been recorded.",
                 variant: "destructive"
             });
             if (clientWarningsRef.current) clientWarningsRef.current.push("Tab Switch detected");
+            reportInstantViolation("tab_switch", "Student switched to another tab or minimized browser", "high");
         }
     };
 
@@ -390,13 +406,20 @@ const ExamInterface = () => {
   const fullscreenGraceRef = useRef(false);
 
   const handleStartExam = async () => {
-      // NOTE: Do NOT call requestFullscreen() here.
-      // getDisplayMedia() (screen share) opens an OS-level picker that forcibly
-      // EXITS fullscreen. We call requestFullscreen() inside initializeMonitoring(),
-      // right after the picker closes — at which point the browser grants a fresh
-      // user-activation and the fullscreen request succeeds cleanly.
+      // ── Step 0: Synchronous Fullscreen Request ──
+      // Request full screen immediately on user click to satisfy browser gesture constraints.
+      if (document.documentElement.requestFullscreen) {
+          document.documentElement.requestFullscreen().catch(console.warn);
+      }
+
       try {
-          // ── Step 1: Start session on backend ──
+          // ── Step 1: Screen share → fullscreen → webcam/audio ──
+          // Doing this BEFORE hitting the backend ensures the exam timer doesn't
+          // start ticking while the user is figuring out how to share their screen.
+          await initializeMonitoring();
+          await initializeAudioMonitoring();
+
+          // ── Step 2: Start session on backend ──
           const token = localStorage.getItem('token');
           const res = await axios.post(`${API_URL}/session/start`, {
               exam_id: examId
@@ -425,10 +448,6 @@ const ExamInterface = () => {
               throw new Error("No session ID returned from server");
           }
 
-          // ── Step 2: Screen share → fullscreen → webcam/audio ──
-          await initializeMonitoring();
-          await initializeAudioMonitoring();
-
           // WebRTC live feed — commented out (re-enable when TURN infra is ready)
           // const sessionId = localStorage.getItem('examSessionId');
           // if (sessionId) {
@@ -437,11 +456,11 @@ const ExamInterface = () => {
           //     );
           // }
 
-          // ── Step 4: Grace period — prevent overlay flashing during setup ──
+          // ── Step 3: Grace period — prevent overlay flashing during setup ──
           fullscreenGraceRef.current = true;
           setTimeout(() => { fullscreenGraceRef.current = false; }, 3000);
 
-          // ── Step 5: Mark exam as started ──────────────────────
+          // ── Step 4: Mark exam as started ──────────────────────
           setHasStarted(true);
 
       } catch (err) {
@@ -898,22 +917,22 @@ const ExamInterface = () => {
 
   return (
     <div className="min-h-screen bg-gray-50 relative">
-      {/* Fullscreen Violation Overlay — suppressed during 3-second grace window */}
+      {/* Fullscreen Enforcement Overlay */}
       {!isFullscreen && !fullscreenGraceRef.current && (
         <div className="fixed inset-0 bg-red-600 z-[9999] flex flex-col items-center justify-center text-white p-8 text-center animate-pulse">
             <AlertTriangle className="w-32 h-32 mb-6" />
-            <h1 className="text-5xl font-bold mb-6">EXAM VIOLATION</h1>
+            <h1 className="text-5xl font-bold mb-6">FULL SCREEN REQUIRED</h1>
             <p className="text-2xl mb-8 max-w-2xl">
-                You have exited full screen mode. Please return immediately.
-                This incident has been recorded.
+                The exam is currently paused because you are not in full screen mode.
+                Exiting full screen is a violation and has been recorded.
             </p>
             <Button 
+                size="lg" 
+                variant="outline" 
+                className="bg-white text-red-600 hover:bg-gray-100 font-bold text-xl py-8 px-12"
                 onClick={() => document.documentElement.requestFullscreen().catch(console.warn)} 
-                variant="secondary" 
-                size="lg"
-                className="text-xl px-8 py-6 font-bold"
             >
-                RETURN TO EXAM
+                ENTER FULL SCREEN TO RESUME EXAM
             </Button>
         </div>
       )}

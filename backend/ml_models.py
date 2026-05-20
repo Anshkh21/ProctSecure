@@ -451,7 +451,7 @@ class ProctoringModel:
         
         return results
 
-    def enhanced_analyze_frame(self, image_np: np.ndarray) -> Dict[str, Any]:
+    def enhanced_analyze_frame(self, image_np: np.ndarray, reference_face_image_np: Optional[np.ndarray] = None) -> Dict[str, Any]:
         """
         Enhanced frame analysis using research paper methodology.
         Includes:
@@ -467,6 +467,16 @@ class ProctoringModel:
         """
         # Run basic analysis
         basic_results = self.analyze_frame(image_np)
+        
+        similarity = None
+        if reference_face_image_np is not None and basic_results.get("face_count", 0) > 0:
+            import random
+            # 20% random sampling to prevent crushing the CPU with constant DeepFace calls
+            if random.random() < 0.2:
+                match_result = self.verify_face_match(reference_face_image_np, image_np)
+                if not match_result.get("verified", True):
+                    basic_results["warnings"].append("Unrecognized person detected (face does not match verification)")
+                similarity = match_result.get("distance")
         
         # Initialize enhanced results
         enhanced_results = {
@@ -505,7 +515,7 @@ class ProctoringModel:
                 # Prepare face analysis data
                 face_analysis = {
                     "face_count": basic_results.get("face_count", 0),
-                    "similarity": None  # TODO: Add face verification similarity
+                    "similarity": similarity
                 }
                 
                 # Prepare gaze analysis data  
