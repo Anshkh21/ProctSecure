@@ -46,7 +46,7 @@ const ExamInterface = () => {
   const [answers, setAnswers] = useState({});
   const [timeRemaining, setTimeRemaining] = useState(null); // Initialize as null, set on start
   const [webcamStatus, setWebcamStatus] = useState('active');
-  const [isFullscreen, setIsFullscreen] = useState(true);
+  const [isFullscreen, setIsFullscreen] = useState(false);
   const [flaggedQuestions, setFlaggedQuestions] = useState(new Set());
   const [questionsList, setQuestionsList] = useState([]); // State for fetched questions
   const [analysisResult, setAnalysisResult] = useState(null); // [NEW] Anomaly Analysis Result
@@ -406,12 +406,9 @@ const ExamInterface = () => {
   const fullscreenGraceRef = useRef(false);
 
   const handleStartExam = async () => {
-      // ── Step 0: Synchronous Fullscreen Request ──
-      // Request full screen immediately on user click to satisfy browser gesture constraints.
-      if (document.documentElement.requestFullscreen) {
-          document.documentElement.requestFullscreen().catch(console.warn);
-      }
-
+      // NOTE: Do NOT requestFullscreen() here.
+      // getDisplayMedia() opens the OS screen picker which forcibly exits fullscreen.
+      // We request fullscreen AFTER the picker closes inside initializeMonitoring().
       try {
           // ── Step 1: Screen share → fullscreen → webcam/audio ──
           // Doing this BEFORE hitting the backend ensures the exam timer doesn't
@@ -458,7 +455,7 @@ const ExamInterface = () => {
 
           // ── Step 3: Grace period — prevent overlay flashing during setup ──
           fullscreenGraceRef.current = true;
-          setTimeout(() => { fullscreenGraceRef.current = false; }, 3000);
+          setTimeout(() => { fullscreenGraceRef.current = false; }, 5000);
 
           // ── Step 4: Mark exam as started ──────────────────────
           setHasStarted(true);
@@ -581,15 +578,28 @@ const ExamInterface = () => {
           }
       }
 
-      // ── 2. Enter Fullscreen immediately after screen share resolves ───────
-      // The browser just returned from the native picker (counts as a user
-      // interaction), so requestFullscreen() is permitted here.
-      if (document.documentElement.requestFullscreen && !document.fullscreenElement) {
+      // ── 2. Enter Fullscreen after screen share resolves ────────────────
+      // The browser just returned from the native picker. Some browsers treat
+      // this as a user-activation, others do not. We try immediately, and if
+      // that fails we schedule a retry. The overlay will enforce it regardless.
+      const tryFullscreen = async () => {
+          if (document.fullscreenElement) return true;
           try {
               await document.documentElement.requestFullscreen();
-          } catch (fsErr) {
-              // Non-fatal — exam still runs; the overlay will prompt re-entry.
-              console.warn("Post-screenshare fullscreen request failed:", fsErr);
+              return true;
+          } catch (e) {
+              console.warn("Fullscreen attempt failed:", e.message);
+              return false;
+          }
+      };
+
+      let entered = await tryFullscreen();
+      if (!entered) {
+          // Retry after a short delay — sometimes the activation needs a tick
+          await new Promise(r => setTimeout(r, 300));
+          entered = await tryFullscreen();
+          if (!entered) {
+              console.warn("Fullscreen failed after retry. Overlay will enforce re-entry.");
           }
       }
 

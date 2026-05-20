@@ -7,7 +7,7 @@ except ImportError:
     print("Warning: DeepFace not installed. Face verification will be disabled.")
 import numpy as np
 import time
-from typing import Dict, List, Tuple, Any
+from typing import Dict, List, Tuple, Any, Optional
 import pytesseract
 from thefuzz import fuzz
 
@@ -469,14 +469,24 @@ class ProctoringModel:
         basic_results = self.analyze_frame(image_np)
         
         similarity = None
+        face_verification_score = 0.0
         if reference_face_image_np is not None and basic_results.get("face_count", 0) > 0:
             import random
-            # 20% random sampling to prevent crushing the CPU with constant DeepFace calls
-            if random.random() < 0.2:
-                match_result = self.verify_face_match(reference_face_image_np, image_np)
-                if not match_result.get("verified", True):
-                    basic_results["warnings"].append("Unrecognized person detected (face does not match verification)")
-                similarity = match_result.get("distance")
+            # 30% random sampling — checks roughly every 10 seconds at 3s intervals
+            if random.random() < 0.3:
+                try:
+                    match_result = self.verify_face_match(reference_face_image_np, image_np)
+                    print(f"[FaceVerify] verified={match_result.get('verified')}, distance={match_result.get('distance')}, msg={match_result.get('message')}")
+                    
+                    # Only flag if DeepFace actually ran and returned a real mismatch
+                    # (not an error fallback)
+                    if "error" not in match_result.get("message", "").lower():
+                        if not match_result.get("verified", True):
+                            basic_results["warnings"].append("Unrecognized person detected (face does not match verification)")
+                        similarity = match_result.get("distance")
+                        face_verification_score = 1.0 - match_result.get("distance", 0.5) if match_result.get("verified") else match_result.get("distance", 0.5)
+                except Exception as e:
+                    print(f"[FaceVerify] Exception during verification: {e}")
         
         # Initialize enhanced results
         enhanced_results = {
@@ -484,7 +494,7 @@ class ProctoringModel:
             "anomaly_scoring": {
                 "enabled": self.anomaly_scorer is not None,
                 "S_total": 0.0,
-                "S_face": 0.0,
+                "S_face": face_verification_score,
                 "S_gaze": 0.0,
                 "S_object": 0.0,
                 "alert_level": "LOW",

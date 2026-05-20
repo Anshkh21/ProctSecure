@@ -1985,8 +1985,11 @@ async def analyze_frame_enhanced(
         if reference_face_b64:
             try:
                 reference_face_image_np = decode_base64_image_to_bgr(reference_face_b64)
+                logger.info(f"[FaceVerify] Loaded reference face for session {session_id}, shape={reference_face_image_np.shape}")
             except Exception as e:
                 logger.error(f"Failed to decode reference face for session {session_id}: {e}")
+        else:
+            logger.debug(f"[FaceVerify] No reference_face_image in session {session_id}")
 
         # Run enhanced analysis (includes object detection + anomaly scoring)
         result = await run_in_threadpool(proctor_model.enhanced_analyze_frame, image_np, reference_face_image_np)
