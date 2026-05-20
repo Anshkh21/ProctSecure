@@ -309,7 +309,7 @@ const AdminDashboard = () => {
                       </div>
                     </div>
                     <p className="text-xs text-gray-600 mt-2">
-                      Share this password with the new proctor. They'll be asked to change it on first login.
+                      An email containing these credentials has been automatically sent to the new proctor.
                     </p>
                   </div>
                 )}

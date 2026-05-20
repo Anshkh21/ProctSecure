@@ -659,13 +659,17 @@ async def invite_proctor(request: ProctorInviteRequest, admin: dict = Depends(re
     
     await db.users.insert_one(new_proctor)
     
-    # Return temp password so admin can share it
+    # Send email to the new proctor
+    email_sent = send_proctor_invite_email(request.email, request.name, temp_password)
+    
+    note = "An email with these credentials has been sent to the proctor." if email_sent else "Failed to send email. Please share this password securely with the proctor."
+    
     return {
         "message": "Proctor created successfully",
         "proctor_id": new_proctor["id"],
         "email": request.email,
         "temporary_password": temp_password,
-        "note": "Share this password securely with the proctor. They should change it upon first login."
+        "note": note
     }
 
 @api_router.get("/admin/proctors")
@@ -897,6 +901,68 @@ class EnrollStudentsRequest(BaseModel):
 def generate_random_password(length=12):
     characters = string.ascii_letters + string.digits
     return ''.join(random.choice(characters) for i in range(length))
+
+def send_proctor_invite_email(to_email: str, name: str, generated_password: str):
+    brevo_api_key = os.getenv("BREVO_API_KEY")
+    sender_email = os.getenv("BREVO_SENDER_EMAIL", os.getenv("SMTP_USER", "noreply@proctorsecure.com"))
+    
+    if not brevo_api_key:
+        logger.warning(f"BREVO_API_KEY not configured. Skipping email to {to_email}")
+        return False
+        
+    try:
+        frontend_url = os.getenv("REACT_APP_FRONTEND_URL", "http://localhost:3000")
+        
+        html = f"""
+        <html>
+          <body style="font-family: Arial, sans-serif; line-height: 1.6; color: #333;">
+            <div style="max-width: 600px; margin: 0 auto; padding: 20px; border: 1px solid #e0e0e0; border-radius: 8px;">
+              <h2 style="color: #4f46e5;">ProctorSecure Admin</h2>
+              <p>Hello {name},</p>
+              <p>You have been invited to join ProctorSecure as a Proctor.</p>
+              
+              <div style="background-color: #eef2ff; padding: 15px; border-radius: 6px; margin: 20px 0; border: 1px solid #c7d2fe;">
+                <h3 style="margin-top: 0; color: #4338ca;">Your Proctor Credentials</h3>
+                <p><strong>Login URL:</strong> <a href="{frontend_url}">{frontend_url}</a></p>
+                <p><strong>Email:</strong> {to_email}</p>
+                <p><strong>Password:</strong> <span style="font-family: monospace; background: #e2e8f0; padding: 2px 6px; border-radius: 4px;">{generated_password}</span></p>
+              </div>
+              
+              <p>Please keep these credentials secure. You should log in and change your password as soon as possible.</p>
+              <br/>
+              <p style="font-size: 0.9em; color: #6b7280;">If you have any questions, please contact your system administrator.</p>
+            </div>
+          </body>
+        </html>
+        """
+        
+        data = {
+            "sender": {"email": sender_email, "name": "ProctorSecure Admin"},
+            "to": [{"email": to_email}],
+            "subject": "Proctor Invitation",
+            "htmlContent": html
+        }
+        
+        req = urllib.request.Request(
+            "https://api.brevo.com/v3/smtp/email",
+            data=json.dumps(data).encode("utf-8"),
+            headers={
+                "accept": "application/json",
+                "api-key": brevo_api_key,
+                "content-type": "application/json"
+            },
+            method="POST"
+        )
+        
+        with urllib.request.urlopen(req) as response:
+            if response.status in (200, 201, 202):
+                return True
+            else:
+                logger.error(f"Failed to send proctor invite email to {to_email}: {response.read()}")
+                return False
+    except Exception as e:
+        logger.error(f"Failed to send proctor invite email to {to_email}: {e}")
+        return False
 
 def send_invite_email(to_email: str, exam_title: str, exam_date: str, duration: int, generated_password: str):
     brevo_api_key = os.getenv("BREVO_API_KEY")
